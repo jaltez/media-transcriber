@@ -1,0 +1,10 @@
+{
+  "inputFolder": "./input",
+  "outputFolder": "./output",
+  "whisperModel": "large-v2",
+  "device": "cuda",
+  "maxDurationSeconds": 1200,
+  "enableAudioEnhancement": false,
+  "keepIntermediateFiles": false,
+  "outputFormats": ["txt", "srt"]
+}

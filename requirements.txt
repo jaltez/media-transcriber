@@ -1,0 +1,7 @@
+# Audio Transcription Batch Processor - Python Dependencies
+
+# Whisper AI for transcription
+openai-whisper>=20231117
+
+# No additional Python packages required - uses subprocess for ffmpeg/ffprobe
+# Ensure you have ffmpeg and whisper installed on your system
