@@ -43,8 +43,6 @@ python transcribe_batch.py --interactive
 python transcribe_batch.py -i ./input -o ./output
 ```
 
-
-
 ### Using Config File
 
 Create or edit `config.json` with your preferences:
@@ -66,8 +64,6 @@ Create or edit `config.json` with your preferences:
 ```bash
 python transcribe_batch.py -c config.json
 ```
-
-
 
 ## Usage Examples
 
@@ -106,24 +102,21 @@ python transcribe_batch.py \
 python transcribe_batch.py -i ./input --keep-temp
 ```
 
-
-
 ## Configuration Options
 
 ### Python Command-Line Arguments
 
-| Argument | Description |
-|----------|-------------|
-| `-c, --config` | Path to configuration JSON file |
-| `-i, --input` | Input folder containing audio/video files |
-| `-o, --output` | Output folder for transcripts |
-| `-m, --model` | Whisper model (e.g., large-v2, medium, small) |
-| `-d, --device` | Processing device (cuda or cpu) |
-| `--max-duration` | Max duration before split (seconds) |
-| `--enhance` | Enable audio enhancement |
-| `--keep-temp` | Keep intermediate files |
-| `--interactive` | Run in interactive mode |
-
+| Argument         | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `-c, --config`   | Path to configuration JSON file               |
+| `-i, --input`    | Input folder containing audio/video files     |
+| `-o, --output`   | Output folder for transcripts                 |
+| `-m, --model`    | Whisper model (e.g., large-v2, medium, small) |
+| `-d, --device`   | Processing device (cuda or cpu)               |
+| `--max-duration` | Max duration before split (seconds)           |
+| `--enhance`      | Enable audio enhancement                      |
+| `--keep-temp`    | Keep intermediate files                       |
+| `--interactive`  | Run in interactive mode                       |
 
 ### Config File Format
 
@@ -157,7 +150,7 @@ Both versions support JSON configuration files:
 ## Folder Structure
 
 ```text
-audio-transcriptions/
+media-transcriber/
 ├── transcribe_batch.py        # Python main script
 ├── config.json                # Configuration file
 ├── requirements.txt           # Python dependencies
@@ -222,8 +215,6 @@ whisper --help
 python transcribe_batch.py -i ./input -m medium -d cpu
 ```
 
-
-
 ### Poor Transcription Quality
 
 - Try `large-v3` model for latest improvements
@@ -252,8 +243,6 @@ python transcribe_batch.py -i ./input -m medium -d cpu
 # Process only MP4 files
 python transcribe_batch.py -i ./videos
 ```
-
-
 
 ## Performance Tips
 

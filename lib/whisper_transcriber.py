@@ -13,16 +13,16 @@ def transcribe_audio(
 ) -> Dict[str, Optional[str]]:
     """
     Transcribe audio file using Whisper CLI
-    
+
     Args:
         input_file: Full path to input audio file
         model: Whisper model name (e.g., large-v2, medium, small)
         device: Device to use (cuda or cpu)
         output_dir: Directory where transcription files will be saved
-    
+
     Returns:
         Dictionary with 'txt_file' and 'srt_file' paths (or None if not found)
-    
+
     Raises:
         FileNotFoundError: If input file doesn't exist
         RuntimeError: If Whisper transcription fails
@@ -30,11 +30,11 @@ def transcribe_audio(
     input_path = Path(input_file)
     if not input_path.exists():
         raise FileNotFoundError(f"Input file not found: {input_file}")
-    
+
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Build Whisper command: request all output formats so we get both TXT and SRT
     cmd = [
         'whisper',
@@ -45,17 +45,17 @@ def transcribe_audio(
         '--output_format', 'all',
         '--verbose', 'False'
     ]
-    
+
     # Run Whisper
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True
     )
-    
+
     if result.returncode != 0:
         raise RuntimeError(f"Whisper transcription failed: {result.stderr}")
-    
+
     # Find output files
     txt_files = list(output_path.glob("*.txt"))
     srt_files = list(output_path.glob("*.srt"))

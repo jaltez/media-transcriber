@@ -41,36 +41,36 @@ def load_config(config_file: Optional[str] = None) -> Dict:
         "keep_intermediate_files": False,
         "output_formats": ["txt", "srt"]
     }
-    
+
     if config_file and Path(config_file).exists():
         print(f"{Colors.CYAN}Loading configuration from {config_file}...{Colors.RESET}")
         with open(config_file, 'r') as f:
             file_config = json.load(f)
             default_config.update(file_config)
-    
+
     return default_config
 
 
 def interactive_config() -> Dict:
     """Get configuration through interactive prompts"""
     print(f"\n{Colors.GREEN}=== Audio Transcription Batch Processor ==={Colors.RESET}\n")
-    
+
     config = {}
-    
+
     config['input_folder'] = input("Input folder (default: ./input): ").strip() or "./input"
     config['output_folder'] = input("Output folder (default: ./output): ").strip() or "./output"
     config['whisper_model'] = input("Whisper model (default: large-v2): ").strip() or "large-v2"
     config['device'] = input("Device (cuda/cpu, default: cuda): ").strip() or "cuda"
-    
+
     duration = input("Max duration before split in seconds (default: 1200): ").strip()
     config['max_duration_seconds'] = int(duration) if duration else 1200
-    
+
     enhance = input("Enable audio enhancement? (y/N): ").strip().lower()
     config['enable_audio_enhancement'] = enhance in ['y', 'yes']
-    
+
     keep = input("Keep intermediate files? (y/N): ").strip().lower()
     config['keep_intermediate_files'] = keep in ['y', 'yes']
-    
+
     print()
     return config
 
@@ -96,11 +96,11 @@ def find_input_files(input_folder: str) -> List[Path]:
     """Find all supported audio/video files in input folder"""
     supported_extensions = ['.m4a', '.mp3', '.mp4', '.mkv', '.wav']
     input_path = Path(input_folder)
-    
+
     files = []
     for ext in supported_extensions:
         files.extend(input_path.rglob(f"*{ext}"))
-    
+
     return sorted(files)
 
 
@@ -109,10 +109,10 @@ def process_file(file_path: Path, config: Dict, file_num: int, total_files: int)
     base_name = file_path.stem
     temp_folder = Path(config['temp_folder'])
     output_folder = Path(config['output_folder'])
-    
+
     print(f"{Colors.GREEN}[{file_num}/{total_files}] Processing: {file_path.name}{Colors.RESET}")
     print("=" * 70)
-    
+
     try:
         # Step 1: Convert to MP3 if needed
         if file_path.suffix == '.mp3':
@@ -122,25 +122,25 @@ def process_file(file_path: Path, config: Dict, file_num: int, total_files: int)
             print(f"{Colors.CYAN}  → Converting to MP3...{Colors.RESET}")
             mp3_file = convert_to_mp3(str(file_path), str(temp_folder))
             print(f"{Colors.GREEN}  ✓ Converted to MP3{Colors.RESET}")
-        
+
         # Step 2: Check duration and split if necessary
         print(f"{Colors.CYAN}  → Checking audio duration...{Colors.RESET}")
         duration = get_audio_duration(mp3_file)
-        
+
         needs_split = duration > config['max_duration_seconds']
         audio_files = []
-        
+
         if needs_split:
             num_parts = int(duration / config['max_duration_seconds']) + 1
             print(f"{Colors.YELLOW}  ⚠ Duration: {int(duration)}s exceeds limit, "
                   f"splitting into {num_parts} parts...{Colors.RESET}")
-            
+
             audio_files = split_audio(mp3_file, num_parts, str(temp_folder), base_name)
             print(f"{Colors.GREEN}  ✓ Split into {len(audio_files)} parts{Colors.RESET}")
         else:
             print(f"{Colors.GREEN}  ✓ Duration: {int(duration)}s (no split needed){Colors.RESET}")
             audio_files = [mp3_file]
-        
+
         # Step 3: Enhance audio if requested
         if config['enable_audio_enhancement']:
             print(f"{Colors.CYAN}  → Enhancing audio...{Colors.RESET}")
@@ -150,15 +150,15 @@ def process_file(file_path: Path, config: Dict, file_num: int, total_files: int)
                 enhanced_files.append(enhanced)
             audio_files = enhanced_files
             print(f"{Colors.GREEN}  ✓ Audio enhanced{Colors.RESET}")
-        
+
         # Step 4: Transcribe with Whisper
         print(f"{Colors.CYAN}  → Transcribing with Whisper ({config['whisper_model']})...{Colors.RESET}")
         transcript_parts = []
-        
+
         for i, audio_file in enumerate(audio_files, 1):
             if len(audio_files) > 1:
                 print(f"{Colors.GRAY}    → Part {i}/{len(audio_files)}...{Colors.RESET}")
-            
+
             output_dir = temp_folder / f"{base_name}_part{i:02d}"
             result = transcribe_audio(
                 audio_file,
@@ -166,40 +166,40 @@ def process_file(file_path: Path, config: Dict, file_num: int, total_files: int)
                 config['device'],
                 str(output_dir)
             )
-            
+
             transcript_parts.append({
                 'txt_file': result.get('txt_file'),
                 'srt_file': result.get('srt_file'),
                 'part_number': i
             })
-        
+
         print(f"{Colors.GREEN}  ✓ Transcription complete{Colors.RESET}")
-        
+
         # Step 5: Merge transcripts if split
         if len(transcript_parts) > 1:
             print(f"{Colors.CYAN}  → Merging transcript parts...{Colors.RESET}")
-            
+
             final_txt = output_folder / f"{base_name}.txt"
             final_srt = output_folder / f"{base_name}.srt"
-            
+
             merge_transcripts(transcript_parts, str(final_txt), str(final_srt))
             print(f"{Colors.GREEN}  ✓ Merged transcripts{Colors.RESET}")
         else:
             # Copy single files to output
             print(f"{Colors.CYAN}  → Copying transcripts to output...{Colors.RESET}")
-            
+
             if transcript_parts[0]['txt_file']:
                 import shutil
                 shutil.copy2(transcript_parts[0]['txt_file'], output_folder / f"{base_name}.txt")
             if transcript_parts[0]['srt_file']:
                 import shutil
                 shutil.copy2(transcript_parts[0]['srt_file'], output_folder / f"{base_name}.srt")
-            
+
             print(f"{Colors.GREEN}  ✓ Copied to output{Colors.RESET}")
-        
+
         print(f"{Colors.GREEN}  ✓✓ {file_path.name} - COMPLETE ✓✓\n{Colors.RESET}")
         return True
-        
+
     except Exception as e:
         print(f"{Colors.RED}  ✗ ERROR: {e}{Colors.RESET}\n")
         return False
@@ -227,17 +227,17 @@ def main():
     parser.add_argument('--enhance', action='store_true', help='Enable audio enhancement')
     parser.add_argument('--keep-temp', action='store_true', help='Keep intermediate files')
     parser.add_argument('--interactive', action='store_true', help='Run in interactive mode')
-    
+
     args = parser.parse_args()
-    
+
     # Load configuration
     config = load_config(args.config)
-    
+
     # Interactive mode
     if args.interactive or (not args.input and not Path(config['input_folder']).exists()):
         interactive_cfg = interactive_config()
         config.update(interactive_cfg)
-    
+
     # Override with command-line arguments
     if args.input:
         config['input_folder'] = args.input
@@ -253,46 +253,46 @@ def main():
         config['enable_audio_enhancement'] = True
     if args.keep_temp:
         config['keep_intermediate_files'] = True
-    
+
     # Ensure temp_folder is set
     if 'temp_folder' not in config:
         config['temp_folder'] = './temp'
-    
+
     # Create directories
     create_directories(config)
-    
+
     # Display configuration
     display_config(config)
-    
+
     # Find input files
     input_files = find_input_files(config['input_folder'])
-    
+
     if not input_files:
         print(f"{Colors.RED}No supported audio/video files found in {config['input_folder']}{Colors.RESET}")
         print(f"{Colors.YELLOW}Supported formats: m4a, mp3, mp4, mkv, wav{Colors.RESET}")
         return 1
-    
+
     print(f"{Colors.CYAN}Found {len(input_files)} file(s) to process\n{Colors.RESET}")
-    
+
     # Process each file
     failed_files = []
     for i, file_path in enumerate(input_files, 1):
         success = process_file(file_path, config, i, len(input_files))
         if not success:
             failed_files.append(file_path.name)
-    
+
     # Cleanup temp folder if requested
     if not config['keep_intermediate_files']:
         print(f"{Colors.YELLOW}Cleaning up temporary files...{Colors.RESET}")
         cleanup_temp_files(config['temp_folder'])
-    
+
     # Summary
     print("\n" + "=" * 70)
     print(f"{Colors.GREEN}=== Processing Complete ==={Colors.RESET}")
     print("=" * 70)
     print(f"{Colors.CYAN}Total files: {len(input_files)}{Colors.RESET}")
     print(f"{Colors.GREEN}Successful: {len(input_files) - len(failed_files)}{Colors.RESET}")
-    
+
     if failed_files:
         print(f"{Colors.RED}Failed: {len(failed_files)}{Colors.RESET}")
         print(f"\n{Colors.RED}Failed files:{Colors.RESET}")
@@ -300,9 +300,9 @@ def main():
             print(f"{Colors.RED}  - {file}{Colors.RESET}")
     else:
         print(f"{Colors.GRAY}Failed: 0{Colors.RESET}")
-    
+
     print(f"\n{Colors.CYAN}Output location: {config['output_folder']}{Colors.RESET}\n")
-    
+
     return 0 if not failed_files else 1
 
 
