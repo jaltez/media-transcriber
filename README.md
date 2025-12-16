@@ -151,18 +151,12 @@ Both versions support JSON configuration files:
 
 ```text
 media-transcriber/
-├── transcribe_batch.py        # Python main script
-├── config.json                # Configuration file
-├── requirements.txt           # Python dependencies
-├── lib/                       # Library modules (Python)
-│   ├── audio_converter.py     # Format conversion
-│   ├── audio_splitter.py      # Audio splitting
-│   ├── audio_enhancer.py      # Audio enhancement
-│   ├── whisper_transcriber.py # Whisper wrapper
-│   └── transcript_merger.py   # Transcript merging
-├── input/                     # Place your audio/video files here
-├── output/                    # Final transcripts appear here
-└── temp/                      # Temporary files (auto-cleaned)
+├─ transcribe_batch.py        # main script
+├─ config.json, requirements.txt
+├─ lib/                       # modules: conversion, splitting, enhancement, transcription, merging
+├─ input/                     # source files
+├─ output/                    # transcripts (txt, srt)
+└─ temp/                      # temporary files (auto-cleaned)
 ```
 
 ## Output Files
@@ -251,18 +245,10 @@ python transcribe_batch.py -i ./videos
 - **Batch timing**: Process overnight for large batches
 - **Audio enhancement**: Adds ~30% processing time but improves accuracy
 
-## Which Version to Use?
-
-### Use Python
-
-- You prefer cross-platform compatibility
-- You're familiar with Python ecosystem
-- You want easier extensibility
-- You need to integrate with other Python tools
-
 ## License
 
-This is a utility script for personal use. Whisper is licensed under MIT by OpenAI.
+This is a utility script for personal use under the MIT License.
+Whisper is licensed under MIT by OpenAI.
 
 ## Support
 
