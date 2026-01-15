@@ -1,8 +1,18 @@
 [project]
 name = "media-transcriber"
 version = "1.0.0"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 
 dependencies = [
     "openai-whisper>=20231117",
+    "torchvision==0.24.1",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+torchvision = [{ index = "pytorch-cu130" }]

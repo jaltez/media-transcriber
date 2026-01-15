@@ -1,15 +1,13 @@
 """Whisper transcription utilities"""
 
 import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Optional
 
 
 def transcribe_audio(
-    input_file: str,
-    model: str,
-    device: str,
-    output_dir: str
+    input_file: str, model: str, device: str, output_dir: str
 ) -> Dict[str, Optional[str]]:
     """
     Transcribe audio file using Whisper CLI
@@ -36,22 +34,32 @@ def transcribe_audio(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Build Whisper command: request all output formats so we get both TXT and SRT
+    # Use python -m whisper to ensure we use the venv's Python with CUDA support
     cmd = [
-        'whisper',
+        sys.executable,
+        "-m",
+        "whisper",
         str(input_path),
-        '--model', model,
-        '--device', device,
-        '--output_dir', str(output_path),
-        '--output_format', 'all',
-        '--verbose', 'False'
+        "--model",
+        model,
+        "--device",
+        device,
+        "--output_dir",
+        str(output_path),
+        "--output_format",
+        "all",
+        "--verbose",
+        "False",
     ]
 
+    # Set environment variables to ensure CUDA is accessible
+    import os
+
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = "0"
+
     # Run Whisper
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
 
     if result.returncode != 0:
         raise RuntimeError(f"Whisper transcription failed: {result.stderr}")
@@ -61,12 +69,14 @@ def transcribe_audio(
     srt_files = list(output_path.glob("*.srt"))
 
     # If TXT is missing or empty but SRT exists, generate TXT from SRT as a fallback
-    if (not txt_files or (txt_files and txt_files[0].stat().st_size == 0)) and srt_files:
+    if (
+        not txt_files or (txt_files and txt_files[0].stat().st_size == 0)
+    ) and srt_files:
         srt_path = srt_files[0]
         txt_path = output_path / f"{input_path.stem}.txt"
 
         # Extract only the subtitle text lines from SRT
-        with open(srt_path, 'r', encoding='utf-8') as f:
+        with open(srt_path, "r", encoding="utf-8") as f:
             srt_lines = f.readlines()
 
         text_lines = []
@@ -77,18 +87,18 @@ def transcribe_audio(
                 continue
             if stripped.isdigit():
                 continue
-            if '-->' in stripped:
+            if "-->" in stripped:
                 continue
             text_lines.append(stripped)
 
         # Write fallback TXT
-        with open(txt_path, 'w', encoding='utf-8') as f:
-            f.write('\n\n'.join(text_lines))
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write("\n\n".join(text_lines))
 
         # Refresh txt_files list
         txt_files = list(output_path.glob("*.txt"))
 
     return {
-        'txt_file': str(txt_files[0]) if txt_files else None,
-        'srt_file': str(srt_files[0]) if srt_files else None
+        "txt_file": str(txt_files[0]) if txt_files else None,
+        "srt_file": str(srt_files[0]) if srt_files else None,
     }
