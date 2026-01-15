@@ -16,20 +16,47 @@ Automated pipeline for batch transcribing audio and video files using Whisper AI
 - **FFmpeg**: For audio/video conversion and processing
 - **Whisper**: For speech-to-text transcription
 - **Python 3.8+**
+- **uv** (recommended) or pip
 
 ### Installation
 
 1. Install FFmpeg: <https://ffmpeg.org/download.html>
 
-2. Install Whisper and Python dependencies:
+2. Install uv (recommended - faster and more reliable):
 
+   ```bash
+   # Windows (PowerShell)
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+   # macOS/Linux
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+3. Install dependencies:
+
+   **Using uv (recommended):**
+   ```bash
+   uv sync
+   ```
+
+   **Using pip (traditional):**
    ```bash
    pip install -r requirements.txt
    ```
 
 ## Quick Start
 
-### Python Version
+### Using uv (recommended)
+
+```bash
+# Interactive mode
+uv run transcribe_batch.py --interactive
+
+# Direct usage
+uv run transcribe_batch.py -i ./input -o ./output
+```
+
+### Using python directly
 
 **Interactive Mode:**
 
@@ -59,7 +86,13 @@ Create or edit `config.json` with your preferences:
 }
 ```
 
-**Python:**
+**Using uv (recommended):**
+
+```bash
+uv run transcribe_batch.py -c config.json
+```
+
+**Using python directly:**
 
 ```bash
 python transcribe_batch.py -c config.json
@@ -67,7 +100,42 @@ python transcribe_batch.py -c config.json
 
 ## Usage Examples
 
-### Python Examples
+### Using uv (recommended)
+
+**Basic Usage:**
+
+```bash
+# Process all files in input/ folder with defaults
+uv run transcribe_batch.py -i ./input
+```
+
+**With Audio Enhancement:**
+
+```bash
+# Enable noise reduction and normalization
+uv run transcribe_batch.py -i ./input --enhance
+```
+
+**Custom Settings:**
+
+```bash
+# Use medium model on CPU, split at 30 minutes
+uv run transcribe_batch.py \
+  -i ./recordings \
+  -o ./transcripts \
+  -m medium \
+  -d cpu \
+  --max-duration 1800
+```
+
+**Keep Intermediate Files:**
+
+```bash
+# Keep converted MP3s and split files for debugging
+uv run transcribe_batch.py -i ./input --keep-temp
+```
+
+### Using python directly
 
 **Basic Usage:**
 
@@ -190,8 +258,15 @@ brew install ffmpeg
 
 ### "whisper not found"
 
-Ensure Whisper is installed and in PATH:
+Ensure Whisper is installed:
 
+**Using uv:**
+```bash
+uv pip install -U openai-whisper
+whisper --help
+```
+
+**Using pip:**
 ```bash
 pip install -U openai-whisper
 whisper --help
@@ -203,7 +278,13 @@ whisper --help
 - Reduce max duration to split files smaller
 - Switch to CPU if GPU memory is insufficient
 
-**Python:**
+**Using uv:**
+
+```bash
+uv run transcribe_batch.py -i ./input -m medium -d cpu
+```
+
+**Using python directly:**
 
 ```bash
 python transcribe_batch.py -i ./input -m medium -d cpu
@@ -231,7 +312,14 @@ python transcribe_batch.py -i ./input -m medium -d cpu
 
 ### Batch Processing Specific Files
 
-**Python:**
+**Using uv:**
+
+```bash
+# Process only MP4 files
+uv run transcribe_batch.py -i ./videos
+```
+
+**Using python directly:**
 
 ```bash
 # Process only MP4 files
