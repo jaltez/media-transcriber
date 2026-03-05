@@ -1,7 +1,6 @@
 import { Command } from "commander";
 import { transcribeCommand } from "./cli/commands/transcribe.js";
 import { setupCommand } from "./cli/commands/setup.js";
-import { configCommand } from "./cli/commands/config.js";
 
 const program = new Command()
   .name("media-transcriber")
@@ -13,6 +12,5 @@ const program = new Command()
 // Register subcommands
 program.addCommand(transcribeCommand, { isDefault: true });
 program.addCommand(setupCommand);
-program.addCommand(configCommand);
 
 program.parse();

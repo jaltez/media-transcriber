@@ -69,8 +69,16 @@ export interface DependencyStatus {
 export type ProgressEvent =
   | { event: "batch_start"; totalFiles: number }
   | { event: "file_start"; file: string; fileNumber: number; totalFiles: number }
-  | { event: "step_start"; file: string; step: PipelineStep }
-  | { event: "step_complete"; file: string; step: PipelineStep }
+  | { event: "step_start"; file: string; step: PipelineStep; message?: string }
+  | {
+      event: "step_progress";
+      file: string;
+      step: PipelineStep;
+      current: number;
+      total: number;
+      message?: string;
+    }
+  | { event: "step_complete"; file: string; step: PipelineStep; message?: string }
   | { event: "file_complete"; file: string; success: boolean; error?: string }
   | { event: "batch_complete"; summary: BatchResult["summary"] };
 

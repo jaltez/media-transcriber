@@ -5,7 +5,7 @@ import { join, basename, extname } from "node:path";
 import type { TranscriptionBackend, TranscribeOptions } from "./types.js";
 import type { Config } from "../config/schema.js";
 import type { DependencyStatus, TranscriptSegment } from "../types/index.js";
-import { findPython } from "../deps/checker.js";
+import { findPythonWithModule } from "../deps/checker.js";
 
 /**
  * Local OpenAI Whisper CLI backend.
@@ -26,31 +26,53 @@ export class WhisperLocalBackend implements TranscriptionBackend {
   }
 
   async checkAvailability(): Promise<DependencyStatus> {
-    // Check Python first
-    const python = await findPython();
-    if (!python.available) {
+    // If user specified pythonPath, only check that interpreter
+    if (this.pythonCmd !== "python3") {
+      try {
+        const check = await execa(
+          this.pythonCmd,
+          ["-c", 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("whisper") else 1)'],
+          { timeout: 10_000 },
+        );
+        if (check.exitCode === 0) {
+          return { available: true, name: this.name, version: `using ${this.pythonCmd}` };
+        }
+      } catch {
+        // fall through
+      }
       return {
         available: false,
         name: this.name,
-        error: "Python not found",
-        installHint: python.installHint,
-      };
-    }
-    this.pythonCmd = python.name;
-    this.pythonArgs = this.pythonCmd === "py" ? ["-3"] : [];
-
-    // Check whisper module
-    try {
-      await execa(this.pythonCmd, [...this.pythonArgs, "-m", "whisper", "--help"], { timeout: 15_000 });
-      return { available: true, name: this.name, version: "installed" };
-    } catch {
-      return {
-        available: false,
-        name: this.name,
-        error: "openai-whisper Python package not found",
+        error: `openai-whisper not found in configured pythonPath (${this.pythonCmd})`,
         installHint: `Install via: ${this.pythonCmd} -m pip install openai-whisper`,
       };
     }
+
+    // Auto-detect: try all Python interpreters for whisper module
+    const result = await findPythonWithModule("whisper");
+
+    if (!result.python.available) {
+      return {
+        available: false,
+        name: this.name,
+        error: result.python.error ?? "Python or whisper not found",
+        installHint: result.python.installHint,
+      };
+    }
+
+    this.pythonCmd = result.python.name;
+    this.pythonArgs = this.pythonCmd === "py" ? ["-3"] : [];
+
+    const versionLabel = result.moduleVersion
+      ? `v${result.moduleVersion}`
+      : "installed";
+    const interpreterLabel = result.resolvedPath ?? this.pythonCmd;
+
+    return {
+      available: true,
+      name: this.name,
+      version: `${versionLabel} (${interpreterLabel})`,
+    };
   }
 
   async transcribe(options: TranscribeOptions): Promise<TranscriptSegment> {

@@ -7,10 +7,9 @@ import {
   listBackends,
 } from "../../backends/registry.js";
 import { defaultConfig } from "../../config/schema.js";
-import { writeFile } from "node:fs/promises";
 
 export const setupCommand = new Command("setup")
-  .description("Interactive setup wizard — check dependencies and generate config")
+  .description("Dependency check wizard for stateless CLI usage")
   .action(async () => {
     console.log(pc.green(pc.bold("\n=== Media Transcriber Setup ===\n")));
 
@@ -49,79 +48,9 @@ export const setupCommand = new Command("setup")
 
     console.log("");
 
-    // 3. Interactive config generation
-    let generateConfig = true;
-
-    try {
-      const { confirm } = await import("@inquirer/prompts");
-      generateConfig = await confirm({
-        message: "Generate a configuration file?",
-        default: true,
-      });
-    } catch {
-      // If prompts fail (non-interactive), skip
-      generateConfig = false;
-    }
-
-    if (generateConfig) {
-      try {
-        const { select, input: inputPrompt } = await import("@inquirer/prompts");
-
-        const backend = await select({
-          message: "Transcription backend:",
-          choices: listBackends().map((name) => ({
-            name: getBackend(name)!.displayName,
-            value: name,
-          })),
-        });
-
-        const inputFolder = await inputPrompt({
-          message: "Input folder:",
-          default: "./data/input",
-        });
-
-        const outputFolder = await inputPrompt({
-          message: "Output folder:",
-          default: "./data/output",
-        });
-
-        const model = await inputPrompt({
-          message: "Model:",
-          default: backend === "whisper-api" ? "whisper-1" : "large-v2",
-        });
-
-        const device = await select({
-          message: "Device:",
-          choices: [
-            { name: "CUDA (GPU)", value: "cuda" },
-            { name: "CPU", value: "cpu" },
-          ],
-        });
-
-        const config = {
-          backend,
-          inputFolder,
-          outputFolder,
-          whisperModel: model,
-          device,
-          maxDurationSeconds: 1200,
-          enableAudioEnhancement: false,
-          keepIntermediateFiles: false,
-          outputFormats: ["txt", "srt"],
-        };
-
-        const configPath = ".media-transcriber.json";
-        await writeFile(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
-        console.log(pc.green(`\n✓ Configuration written to ${configPath}`));
-        console.log(pc.gray("  Run `media-transcriber transcribe` to start.\n"));
-      } catch {
-        console.log(pc.yellow("\nSetup cancelled.\n"));
-      }
-    } else {
-      console.log(
-        pc.gray(
-          "\nSkipped config generation. You can create .media-transcriber.json manually.\n",
-        ),
-      );
-    }
+    console.log(pc.cyan("Stateless usage examples:\n"));
+    console.log(pc.gray("  media-transcriber transcribe ./input ./output"));
+    console.log(pc.gray("  media-transcriber transcribe ./input ./output --backend whisper-api --openai-api-key <key>"));
+    console.log(pc.gray("  media-transcriber transcribe ./input ./output --backend whisper-local --python-path .\\.venv\\Scripts\\python.exe"));
+    console.log(pc.gray("  media-transcriber transcribe ./input ./output --include-temp\n"));
   });

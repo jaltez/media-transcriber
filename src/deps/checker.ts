@@ -45,6 +45,109 @@ export async function findPython(): Promise<DependencyStatus> {
   };
 }
 
+const PYTHON_CANDIDATES = ["python3", "python", "py"] as const;
+
+function pythonArgs(cmd: string): string[] {
+  return cmd === "py" ? ["-3"] : [];
+}
+
+/**
+ * Find a Python interpreter that has a given module installed.
+ * Tries all common interpreter names and returns the first match.
+ * Uses importlib.util.find_spec for near-instant detection (no heavy imports).
+ */
+export async function findPythonWithModule(
+  moduleName: string,
+): Promise<{ python: DependencyStatus; moduleVersion?: string; resolvedPath?: string }> {
+  for (const cmd of PYTHON_CANDIDATES) {
+    const prefix = pythonArgs(cmd);
+    // First check the interpreter exists
+    try {
+      await execa(cmd, [...prefix, "--version"], { timeout: 10_000 });
+    } catch {
+      continue;
+    }
+
+    // Check module existence (fast — no torch import)
+    try {
+      const check = await execa(
+        cmd,
+        [
+          ...prefix,
+          "-c",
+          `import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("${moduleName}") else 1)`,
+        ],
+        { timeout: 10_000 },
+      );
+      if (check.exitCode !== 0) continue;
+    } catch {
+      continue;
+    }
+
+    // Get version + interpreter path
+    let moduleVersion: string | undefined;
+    let resolvedPath: string | undefined;
+    try {
+      const info = await execa(
+        cmd,
+        [
+          ...prefix,
+          "-c",
+          `import sys; print(sys.executable); import importlib.metadata; print(importlib.metadata.version("openai-whisper"))`,
+        ],
+        { timeout: 15_000 },
+      );
+      const lines = info.stdout.trim().split("\n");
+      resolvedPath = lines[0]?.trim();
+      moduleVersion = lines[1]?.trim();
+    } catch {
+      // Non-critical — we still know the module exists
+    }
+
+    const versionResult = await execa(cmd, [...prefix, "--version"], { timeout: 10_000 });
+    const pyVersion = versionResult.stdout.trim() || versionResult.stderr.trim();
+
+    return {
+      python: { available: true, name: cmd, version: pyVersion },
+      moduleVersion,
+      resolvedPath,
+    };
+  }
+
+  // No interpreter has the module — report which interpreters were found
+  const found: string[] = [];
+  for (const cmd of PYTHON_CANDIDATES) {
+    try {
+      await execa(cmd, [...pythonArgs(cmd), "--version"], { timeout: 10_000 });
+      found.push(cmd);
+    } catch {
+      // not available
+    }
+  }
+
+  if (found.length === 0) {
+    return {
+      python: {
+        available: false,
+        name: "python",
+        error: "Python not found in PATH",
+        installHint: getInstallHint("python"),
+      },
+    };
+  }
+
+  return {
+    python: {
+      available: false,
+      name: found[0]!,
+      error: `'${moduleName}' not found in any Python interpreter (checked: ${found.join(", ")})`,
+      installHint:
+        `Install via: ${found[0]} -m pip install openai-whisper\n` +
+        `    If using a virtualenv, make sure it is activated or set pythonPath in config.`,
+    },
+  };
+}
+
 function getInstallHint(command: string): string {
   const platform = process.platform;
   const hints: Record<string, Record<string, string>> = {

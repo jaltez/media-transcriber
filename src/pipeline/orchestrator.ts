@@ -67,51 +67,106 @@ async function processFile(
   try {
     // Step 1: Convert to MP3 if needed
     let mp3File: string;
+    const convertedTarget = join(tempFolder, `${baseName}.mp3`);
     if (extname(filePath).toLowerCase() === ".mp3") {
       mp3File = filePath;
     } else {
-      onProgress({ event: "step_start", file: filePath, step: "convert" });
+      onProgress({
+        event: "step_start",
+        file: filePath,
+        step: "convert",
+        message: `${filePath} -> ${convertedTarget}`,
+      });
       mp3File = await convertToMp3(filePath, tempFolder);
-      onProgress({ event: "step_complete", file: filePath, step: "convert" });
+      onProgress({
+        event: "step_complete",
+        file: filePath,
+        step: "convert",
+        message: `Created ${mp3File}`,
+      });
     }
 
     // Step 2: Check duration and split if necessary
-    onProgress({ event: "step_start", file: filePath, step: "check_duration" });
+    onProgress({
+      event: "step_start",
+      file: filePath,
+      step: "check_duration",
+      message: `Reading duration from ${mp3File}`,
+    });
     durationSeconds = await getAudioDuration(mp3File);
-    onProgress({ event: "step_complete", file: filePath, step: "check_duration" });
+    onProgress({
+      event: "step_complete",
+      file: filePath,
+      step: "check_duration",
+      message: `Duration ${Math.round(durationSeconds)}s (split threshold ${config.maxDurationSeconds}s)`,
+    });
 
     const needsSplit = durationSeconds > config.maxDurationSeconds;
     let audioFiles: string[];
 
     if (needsSplit) {
-      onProgress({ event: "step_start", file: filePath, step: "split" });
       const numParts = Math.floor(durationSeconds / config.maxDurationSeconds) + 1;
+      onProgress({
+        event: "step_start",
+        file: filePath,
+        step: "split",
+        message: `${Math.round(durationSeconds)}s file -> ${numParts} parts`,
+      });
       audioFiles = await splitAudio(mp3File, numParts, tempFolder, baseName);
-      onProgress({ event: "step_complete", file: filePath, step: "split" });
+      onProgress({
+        event: "step_complete",
+        file: filePath,
+        step: "split",
+        message: `Created ${audioFiles.length} part(s)`,
+      });
     } else {
       audioFiles = [mp3File];
     }
 
     // Step 3: Enhance audio if requested
     if (config.enableAudioEnhancement) {
-      onProgress({ event: "step_start", file: filePath, step: "enhance" });
+      onProgress({
+        event: "step_start",
+        file: filePath,
+        step: "enhance",
+        message: `Enhancing ${audioFiles.length} file(s)`,
+      });
       const enhanced: string[] = [];
       for (const audioFile of audioFiles) {
         const result = await enhanceAudio(audioFile, tempFolder);
         enhanced.push(result);
       }
       audioFiles = enhanced;
-      onProgress({ event: "step_complete", file: filePath, step: "enhance" });
+      onProgress({
+        event: "step_complete",
+        file: filePath,
+        step: "enhance",
+        message: `Enhanced ${audioFiles.length} file(s)`,
+      });
     }
 
     // Step 4: Transcribe
-    onProgress({ event: "step_start", file: filePath, step: "transcribe" });
+    onProgress({
+      event: "step_start",
+      file: filePath,
+      step: "transcribe",
+      message: `${audioFiles.length} part(s), model=${config.whisperModel}, backend=${backend.name}`,
+    });
     const transcriptParts = [];
 
     for (let i = 0; i < audioFiles.length; i++) {
       const audioFile = audioFiles[i]!;
       const partNum = i + 1;
       const partDir = join(tempFolder, `${baseName}_part${String(partNum).padStart(2, "0")}`);
+
+      onProgress({
+        event: "step_progress",
+        file: filePath,
+        step: "transcribe",
+        current: partNum,
+        total: audioFiles.length,
+        message: basename(audioFile),
+      });
 
       const segment = await backend.transcribe({
         inputFile: audioFile,
@@ -122,7 +177,12 @@ async function processFile(
 
       transcriptParts.push({ ...segment, partNumber: partNum });
     }
-    onProgress({ event: "step_complete", file: filePath, step: "transcribe" });
+    onProgress({
+      event: "step_complete",
+      file: filePath,
+      step: "transcribe",
+      message: `Completed ${transcriptParts.length} part(s)`,
+    });
 
     // Step 5: Merge or copy output
     let outputTxt: string | null = null;
@@ -131,13 +191,28 @@ async function processFile(
     await mkdir(outputFolder, { recursive: true });
 
     if (transcriptParts.length > 1) {
-      onProgress({ event: "step_start", file: filePath, step: "merge" });
       outputTxt = join(outputFolder, `${baseName}.txt`);
       outputSrt = join(outputFolder, `${baseName}.srt`);
+      onProgress({
+        event: "step_start",
+        file: filePath,
+        step: "merge",
+        message: `${transcriptParts.length} parts -> ${outputTxt}, ${outputSrt}`,
+      });
       await mergeTranscripts(transcriptParts, outputTxt, outputSrt);
-      onProgress({ event: "step_complete", file: filePath, step: "merge" });
+      onProgress({
+        event: "step_complete",
+        file: filePath,
+        step: "merge",
+        message: `Merged outputs written`,
+      });
     } else {
-      onProgress({ event: "step_start", file: filePath, step: "copy_output" });
+      onProgress({
+        event: "step_start",
+        file: filePath,
+        step: "copy_output",
+        message: `Copying transcript files to ${outputFolder}`,
+      });
       const part = transcriptParts[0]!;
       if (part.txtFile && existsSync(part.txtFile)) {
         outputTxt = join(outputFolder, `${baseName}.txt`);
@@ -147,7 +222,12 @@ async function processFile(
         outputSrt = join(outputFolder, `${baseName}.srt`);
         await cp(part.srtFile, outputSrt);
       }
-      onProgress({ event: "step_complete", file: filePath, step: "copy_output" });
+      onProgress({
+        event: "step_complete",
+        file: filePath,
+        step: "copy_output",
+        message: `Copied outputs (${outputTxt ? "txt" : ""}${outputTxt && outputSrt ? ", " : ""}${outputSrt ? "srt" : ""})`,
+      });
     }
 
     onProgress({ event: "file_complete", file: filePath, success: true });

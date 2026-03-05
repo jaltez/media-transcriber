@@ -29,7 +29,7 @@ export class WhisperApiBackend implements TranscriptionBackend {
         name: this.name,
         error: "OpenAI API key not configured",
         installHint:
-          "Set OPENAI_API_KEY environment variable or add openaiApiKey to config file",
+          "Set OPENAI_API_KEY environment variable or pass --openai-api-key",
       };
     }
     return { available: true, name: this.name, version: "whisper-1" };
@@ -41,7 +41,7 @@ export class WhisperApiBackend implements TranscriptionBackend {
 
     if (!key) {
       throw new Error(
-        "OpenAI API key not configured. Set OPENAI_API_KEY or add openaiApiKey to config.",
+        "OpenAI API key not configured. Set OPENAI_API_KEY or pass --openai-api-key.",
       );
     }
 

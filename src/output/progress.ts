@@ -13,6 +13,11 @@ const stepLabels: Record<PipelineStep, string> = {
   copy_output: "Copying output",
 };
 
+function stepText(step: PipelineStep, message?: string): string {
+  const base = stepLabels[step] ?? step;
+  return message ? `${base} - ${message}` : base;
+}
+
 /**
  * Creates a progress callback for human-friendly terminal output with spinners.
  */
@@ -39,13 +44,25 @@ export function createHumanProgress(): (event: ProgressEvent) => void {
 
       case "step_start":
         spinner = ora({
-          text: stepLabels[event.step] ?? event.step,
+          text: stepText(event.step, event.message),
           stream: process.stderr,
         }).start();
         break;
 
+      case "step_progress": {
+        const progressLabel = `[${event.current}/${event.total}]`;
+        const detail = event.message ? ` - ${event.message}` : "";
+
+        if (spinner) {
+          spinner.text = `${stepLabels[event.step] ?? event.step} ${progressLabel}${detail}`;
+        } else {
+          console.error(pc.gray(`  ${stepLabels[event.step] ?? event.step} ${progressLabel}${detail}`));
+        }
+        break;
+      }
+
       case "step_complete":
-        spinner?.succeed(stepLabels[event.step] ?? event.step);
+        spinner?.succeed(stepText(event.step, event.message));
         spinner = null;
         break;
 

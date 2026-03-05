@@ -1,6 +1,5 @@
 import { Command } from "commander";
-import { loadConfig, applyCliOverrides } from "../../config/loader.js";
-import type { Config } from "../../config/schema.js";
+import { configSchema, type Config } from "../../config/schema.js";
 import { checkFfmpeg, formatFfmpegStatus } from "../../deps/ffmpeg.js";
 import {
   registerBuiltinBackends,
@@ -12,27 +11,40 @@ import { formatJson, formatHuman } from "../../output/formatter.js";
 import { createHumanProgress, createJsonProgress } from "../../output/progress.js";
 import { ExitCode } from "../../types/index.js";
 import pc from "picocolors";
+import { join } from "node:path";
 
 export const transcribeCommand = new Command("transcribe")
   .description("Transcribe audio/video files using AI speech-to-text")
-  .option("-c, --config <path>", "Path to configuration file")
-  .option("-i, --input <path>", "Input folder containing audio/video files")
-  .option("-o, --output <path>", "Output folder for transcripts")
+  .argument("<inputFolder>", "Input folder containing audio/video files")
+  .argument("<outputFolder>", "Output folder for transcripts")
   .option("-m, --model <name>", "Transcription model (e.g. large-v2, medium, small)")
   .option("-d, --device <type>", "Processing device (cuda or cpu)")
   .option("-b, --backend <name>", "Transcription backend (whisper-local, whisper-api)")
   .option("--max-duration <seconds>", "Max duration before splitting (seconds)", parseInt)
   .option("--enhance", "Enable audio enhancement")
-  .option("--keep-temp", "Keep intermediate files")
+  .option("--include-temp, --keep-temp", "Keep intermediate files in <outputFolder>/temp")
+  .option("--python-path <path>", "Python executable path for whisper-local backend")
+  .option("--openai-api-key <key>", "OpenAI API key for whisper-api backend")
   .option("--json", "Output results as JSON (for AI agents)")
-  .action(async (opts) => {
+  .action(async (inputFolder: string, outputFolder: string, opts) => {
     const jsonMode = opts.json === true;
 
-    // Load config
+    // Build effective config from execution arguments only (stateless CLI)
     let config: Config;
     try {
-      const { config: loaded } = await loadConfig(opts.config);
-      config = loaded;
+      config = configSchema.parse({
+        inputFolder,
+        outputFolder,
+        tempFolder: join(outputFolder, "temp"),
+        backend: opts.backend,
+        whisperModel: opts.model,
+        device: opts.device,
+        maxDurationSeconds: opts.maxDuration,
+        enableAudioEnhancement: opts.enhance === true,
+        keepIntermediateFiles: opts.includeTemp === true || opts.keepTemp === true,
+        pythonPath: opts.pythonPath,
+        openaiApiKey: opts.openaiApiKey,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (jsonMode) {
@@ -42,19 +54,6 @@ export const transcribeCommand = new Command("transcribe")
       }
       process.exit(ExitCode.CONFIG_ERROR);
     }
-
-    // Apply CLI overrides
-    const overrides: Partial<Config> = {};
-    if (opts.input) overrides.inputFolder = opts.input;
-    if (opts.output) overrides.outputFolder = opts.output;
-    if (opts.model) overrides.whisperModel = opts.model;
-    if (opts.device) overrides.device = opts.device;
-    if (opts.backend) overrides.backend = opts.backend;
-    if (opts.maxDuration) overrides.maxDurationSeconds = opts.maxDuration;
-    if (opts.enhance) overrides.enableAudioEnhancement = true;
-    if (opts.keepTemp) overrides.keepIntermediateFiles = true;
-
-    config = applyCliOverrides(config, overrides);
 
     // Check FFmpeg
     const ffmpegStatus = await checkFfmpeg();

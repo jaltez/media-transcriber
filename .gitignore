@@ -2,9 +2,7 @@ __pycache__/
 .env
 .venv/
 *.pyc
-data/input/
-data/output/
-data/temp/
+test/
 venv/
 
 # Python tooling/cache
