@@ -12,10 +12,10 @@ export function parseSrtTimestamp(timestamp: string): number {
 
   const [, hours, minutes, seconds, ms] = match;
   return (
-    parseInt(hours!) * 3600000 +
-    parseInt(minutes!) * 60000 +
-    parseInt(seconds!) * 1000 +
-    parseInt(ms!)
+    Number.parseInt(hours!, 10) * 3600000 +
+    Number.parseInt(minutes!, 10) * 60000 +
+    Number.parseInt(seconds!, 10) * 1000 +
+    Number.parseInt(ms!, 10)
   );
 }
 
@@ -52,7 +52,7 @@ export function parseSrt(content: string): SrtEntry[] {
 
     // Look for subtitle index (a number on its own line)
     if (/^\d+$/.test(line)) {
-      const index = parseInt(line);
+      const index = Number.parseInt(line, 10);
       i++;
 
       // Next line should be timestamp

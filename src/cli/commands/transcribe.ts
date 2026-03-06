@@ -13,6 +13,27 @@ import { ExitCode } from "../../types/index.js";
 import pc from "picocolors";
 import { join } from "node:path";
 
+interface TranscribeOptions {
+  model?: string;
+  device?: string;
+  backend?: string;
+  maxDuration?: number;
+  enhance?: boolean;
+  includeTemp?: boolean;
+  keepTemp?: boolean;
+  pythonPath?: string;
+  openaiApiKey?: string;
+  json?: boolean;
+}
+
+function parseSecondsOption(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid value for --max-duration: ${value}`);
+  }
+  return parsed;
+}
+
 export const transcribeCommand = new Command("transcribe")
   .description("Transcribe audio/video files using AI speech-to-text")
   .argument("<inputFolder>", "Input folder containing audio/video files")
@@ -20,13 +41,17 @@ export const transcribeCommand = new Command("transcribe")
   .option("-m, --model <name>", "Transcription model (e.g. large-v2, medium, small)")
   .option("-d, --device <type>", "Processing device (cuda or cpu)")
   .option("-b, --backend <name>", "Transcription backend (whisper-local, whisper-api)")
-  .option("--max-duration <seconds>", "Max duration before splitting (seconds)", parseInt)
+  .option(
+    "--max-duration <seconds>",
+    "Max duration before splitting (seconds)",
+    parseSecondsOption,
+  )
   .option("--enhance", "Enable audio enhancement")
   .option("--include-temp, --keep-temp", "Keep intermediate files in <outputFolder>/temp")
   .option("--python-path <path>", "Python executable path for whisper-local backend")
   .option("--openai-api-key <key>", "OpenAI API key for whisper-api backend")
   .option("--json", "Output results as JSON (for AI agents)")
-  .action(async (inputFolder: string, outputFolder: string, opts) => {
+  .action(async (inputFolder: string, outputFolder: string, opts: TranscribeOptions) => {
     const jsonMode = opts.json === true;
 
     // Build effective config from execution arguments only (stateless CLI)
