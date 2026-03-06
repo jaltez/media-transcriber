@@ -17,6 +17,16 @@ import { mergeTranscripts } from "./transcript-merger.js";
 export type ProgressCallback = (event: ProgressEvent) => void;
 
 /**
+ * Determine how many split parts are needed so each part is <= maxDurationSeconds.
+ */
+export function calculateSplitParts(
+  durationSeconds: number,
+  maxDurationSeconds: number,
+): number {
+  return Math.max(1, Math.ceil(durationSeconds / maxDurationSeconds));
+}
+
+/**
  * Discover supported audio/video files in a directory (recursive).
  */
 export async function findInputFiles(inputFolder: string): Promise<string[]> {
@@ -105,7 +115,10 @@ async function processFile(
     let audioFiles: string[];
 
     if (needsSplit) {
-      const numParts = Math.floor(durationSeconds / config.maxDurationSeconds) + 1;
+      const numParts = calculateSplitParts(
+        durationSeconds,
+        config.maxDurationSeconds,
+      );
       onProgress({
         event: "step_start",
         file: filePath,

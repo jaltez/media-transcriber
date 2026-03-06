@@ -1,4 +1,5 @@
 import pc from "picocolors";
+import { dirname } from "node:path";
 import type { BatchResult, ProgressEvent } from "../types/index.js";
 
 /**
@@ -35,10 +36,11 @@ export function formatHuman(result: BatchResult): string {
   const elapsed = (result.summary.elapsed / 1000).toFixed(1);
   lines.push(`\n${pc.cyan("Elapsed:")}      ${elapsed}s`);
 
-  const outputDir = result.files.find((f) => f.output.txt)?.output.txt;
-  if (outputDir) {
-    const dir = outputDir.substring(0, outputDir.lastIndexOf("/") + 1) || outputDir.substring(0, outputDir.lastIndexOf("\\") + 1);
-    lines.push(`${pc.cyan("Output:")}       ${dir}`);
+  const firstOutputPath =
+    result.files.find((f) => f.output.txt)?.output.txt ??
+    result.files.find((f) => f.output.srt)?.output.srt;
+  if (firstOutputPath) {
+    lines.push(`${pc.cyan("Output:")}       ${dirname(firstOutputPath)}`);
   }
 
   lines.push("");
