@@ -2,6 +2,17 @@
   "name": "media-transcriber",
   "version": "1.0.0",
   "description": "Batch transcribe audio/video files using pluggable AI backends (Whisper, OpenAI API, and more)",
+  "homepage": "https://github.com/jaltez/media-transcriber#readme",
+  "bugs": {
+    "url": "https://github.com/jaltez/media-transcriber/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaltez/media-transcriber.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "bin": {
     "media-transcriber": "./dist/index.js"
@@ -25,6 +36,7 @@
     "subtitle",
     "cli"
   ],
+  "author": "Javier Altez",
   "license": "MIT",
   "engines": {
     "node": ">=18"
