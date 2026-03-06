@@ -1,347 +1,117 @@
-# Audio Transcription Batch Processor
+# media-transcriber
 
-Automated pipeline for batch transcribing audio and video files using Whisper AI.
-
-## Features
-
-- **Multi-format support**: m4a, mp3, mp4, mkv, wav
-- **Automatic splitting**: Splits long files to prevent Whisper failures
-- **Audio enhancement**: Optional noise reduction and normalization
-- **Batch processing**: Process entire folders at once
-- **Smart merging**: Automatically combines split transcripts with adjusted SRT timestamps
-- **Flexible configuration**: Interactive mode, config file, or command-line parameters
-
-## Prerequisites
-
-- **FFmpeg**: For audio/video conversion and processing
-- **Whisper**: For speech-to-text transcription
-- **Python 3.8+**
-- **uv** (recommended) or pip
-
-### Installation
-
-1. Install FFmpeg: <https://ffmpeg.org/download.html>
-
-2. Install uv (recommended - faster and more reliable):
-
-   ```bash
-   # Windows (PowerShell)
-   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-   # macOS/Linux
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   ```
-
-3. Install dependencies:
-
-   **Using uv (recommended):**
-   ```bash
-   uv sync
-   ```
-
-   **Using pip (traditional):**
-   ```bash
-   pip install -r requirements.txt
-   ```
+Batch transcribe audio/video files using pluggable AI backends (Whisper local, OpenAI API, and more).
 
 ## Quick Start
 
-### Using uv (recommended)
+```bash
+# Run directly with npx (no install)
+npx media-transcriber setup
+
+# Or install globally
+npm install -g media-transcriber
+
+# Transcribe files (stateless)
+media-transcriber transcribe ./data/input ./data/output
+```
+
+## Requirements
+
+- Node.js >= 18
+- FFmpeg and ffprobe in PATH
+  - Windows: `winget install ffmpeg` or `scoop install ffmpeg`
+  - macOS: `brew install ffmpeg`
+  - Linux: `sudo apt install ffmpeg`
+
+Backend requirements:
+- `whisper-local`: Python 3.10+ with `openai-whisper` installed
+- `whisper-api`: OpenAI API key (`OPENAI_API_KEY` env var or `--openai-api-key`)
+
+## Usage
+
+### Transcribe
 
 ```bash
-# Interactive mode
-uv run transcribe_batch.py --interactive
+# Basic
+media-transcriber transcribe ./recordings ./transcripts
 
-# Direct usage
-uv run transcribe_batch.py -i ./input -o ./output
+# Model and device
+media-transcriber transcribe ./data/input ./data/output -m medium -d cpu
+
+# OpenAI API backend
+media-transcriber transcribe ./data/input ./data/output -b whisper-api --openai-api-key <key>
+
+# Keep temporary files in ./data/output/temp
+media-transcriber transcribe ./data/input ./data/output --include-temp
+
+# JSON output for agents
+media-transcriber transcribe ./data/input ./data/output --json
 ```
 
-### Using python directly
+### Setup
 
-**Interactive Mode:**
+Dependency check wizard (no persistent config file):
 
 ```bash
-python transcribe_batch.py --interactive
+media-transcriber setup
 ```
 
-**Direct Usage:**
+## Execution Options
+
+All parameters are passed at execution time (stateless CLI).
+
+| Field | Type | Default | Description |
+| ---- | ---- | ---- | ---- |
+| `inputFolder` | string | required | Input folder argument |
+| `outputFolder` | string | required | Output folder argument |
+| `backend` | string | `whisper-local` | Transcription backend |
+| `whisperModel` | string | `large-v2` | Model name |
+| `device` | `cuda` or `cpu` | `cuda` | Processing device |
+| `maxDurationSeconds` | number | `1200` | Split threshold |
+| `enableAudioEnhancement` | boolean | `false` | Enable enhancement filters |
+| `keepIntermediateFiles` | boolean | `false` | Keep temp files with `--include-temp` |
+| `tempFolder` | string | `<outputFolder>/temp` | Temp working folder |
+| `pythonPath` | string | unset | Python path for local backend |
+| `openaiApiKey` | string | env/flag | API key for OpenAI backend |
+
+## AI Agent Integration
+
+### Structured JSON
 
 ```bash
-python transcribe_batch.py -i ./input -o ./output
+media-transcriber transcribe ./data/input ./data/output --json 2>/dev/null
 ```
 
-### Using Config File
+### Progress Events (stderr)
 
-Create or edit `config.json` with your preferences:
+In `--json` mode, NDJSON progress events are emitted to stderr.
 
-```json
-{
-  "input_folder": "./input",
-  "output_folder": "./output",
-  "whisper_model": "large-v2",
-  "device": "cuda",
-  "max_duration_seconds": 1200,
-  "enable_audio_enhancement": false,
-  "keep_intermediate_files": false
-}
-```
+### Exit Codes
 
-**Using uv (recommended):**
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Success (all files transcribed) |
+| `1` | General error |
+| `2` | Missing dependency |
+| `3` | Configuration/argument error |
+| `4` | No input files found |
+| `10` | Partial success |
+
+## Supported Formats
+
+Input: `.m4a`, `.mp3`, `.mp4`, `.mkv`, `.wav`, `.flac`, `.ogg`, `.webm`
+
+Output: `.txt`, `.srt`
+
+## Development
 
 ```bash
-uv run transcribe_batch.py -c config.json
+npm install
+npm run typecheck
+npm test
+npm run build
 ```
-
-**Using python directly:**
-
-```bash
-python transcribe_batch.py -c config.json
-```
-
-## Usage Examples
-
-### Using uv (recommended)
-
-**Basic Usage:**
-
-```bash
-# Process all files in input/ folder with defaults
-uv run transcribe_batch.py -i ./input
-```
-
-**With Audio Enhancement:**
-
-```bash
-# Enable noise reduction and normalization
-uv run transcribe_batch.py -i ./input --enhance
-```
-
-**Custom Settings:**
-
-```bash
-# Use medium model on CPU, split at 30 minutes
-uv run transcribe_batch.py \
-  -i ./recordings \
-  -o ./transcripts \
-  -m medium \
-  -d cpu \
-  --max-duration 1800
-```
-
-**Keep Intermediate Files:**
-
-```bash
-# Keep converted MP3s and split files for debugging
-uv run transcribe_batch.py -i ./input --keep-temp
-```
-
-### Using python directly
-
-**Basic Usage:**
-
-```bash
-# Process all files in input/ folder with defaults
-python transcribe_batch.py -i ./input
-```
-
-**With Audio Enhancement:**
-
-```bash
-# Enable noise reduction and normalization
-python transcribe_batch.py -i ./input --enhance
-```
-
-**Custom Settings:**
-
-```bash
-# Use medium model on CPU, split at 30 minutes
-python transcribe_batch.py \
-  -i ./recordings \
-  -o ./transcripts \
-  -m medium \
-  -d cpu \
-  --max-duration 1800
-```
-
-**Keep Intermediate Files:**
-
-```bash
-# Keep converted MP3s and split files for debugging
-python transcribe_batch.py -i ./input --keep-temp
-```
-
-## Configuration Options
-
-### Python Command-Line Arguments
-
-| Argument         | Description                                   |
-| ---------------- | --------------------------------------------- |
-| `-c, --config`   | Path to configuration JSON file               |
-| `-i, --input`    | Input folder containing audio/video files     |
-| `-o, --output`   | Output folder for transcripts                 |
-| `-m, --model`    | Whisper model (e.g., large-v2, medium, small) |
-| `-d, --device`   | Processing device (cuda or cpu)               |
-| `--max-duration` | Max duration before split (seconds)           |
-| `--enhance`      | Enable audio enhancement                      |
-| `--keep-temp`    | Keep intermediate files                       |
-| `--interactive`  | Run in interactive mode                       |
-
-### Config File Format
-
-Both versions support JSON configuration files:
-
-```json
-{
-  "input_folder": "./input",
-  "output_folder": "./output",
-  "whisper_model": "large-v2",
-  "device": "cuda",
-  "max_duration_seconds": 1200,
-  "enable_audio_enhancement": false,
-  "keep_intermediate_files": false
-}
-```
-
-**Note:** Configuration file keys use snake_case to match the Python implementation.
-
-## How It Works
-
-1. **Discovery**: Finds all supported audio/video files in input folder
-2. **Conversion**: Converts non-MP3 files to high-quality MP3
-3. **Duration Check**: Analyzes audio length
-4. **Splitting** (if needed): Divides long files into manageable parts
-5. **Enhancement** (optional): Applies audio filters
-6. **Transcription**: Runs Whisper on each part
-7. **Merging**: Combines split transcripts with adjusted timestamps
-8. **Cleanup**: Removes temporary files (unless kept)
-
-## Folder Structure
-
-```text
-media-transcriber/
-├─ transcribe_batch.py        # main script
-├─ config.json, requirements.txt
-├─ lib/                       # modules: conversion, splitting, enhancement, transcription, merging
-├─ input/                     # source files
-├─ output/                    # transcripts (txt, srt)
-└─ temp/                      # temporary files (auto-cleaned)
-```
-
-## Output Files
-
-For each input file, you'll get:
-
-- `filename.txt` - Plain text transcript
-- `filename.srt` - Subtitle file with timestamps
-
-## Troubleshooting
-
-### "ffmpeg not found"
-
-Add FFmpeg to your PATH or install via package manager:
-
-**Windows:**
-
-```powershell
-winget install ffmpeg
-```
-
-**Linux/Mac:**
-
-```bash
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# macOS
-brew install ffmpeg
-```
-
-### "whisper not found"
-
-Ensure Whisper is installed:
-
-**Using uv:**
-```bash
-uv pip install -U openai-whisper
-whisper --help
-```
-
-**Using pip:**
-```bash
-pip install -U openai-whisper
-whisper --help
-```
-
-### Out of Memory Errors
-
-- Use a smaller model: `medium` or `small`
-- Reduce max duration to split files smaller
-- Switch to CPU if GPU memory is insufficient
-
-**Using uv:**
-
-```bash
-uv run transcribe_batch.py -i ./input -m medium -d cpu
-```
-
-**Using python directly:**
-
-```bash
-python transcribe_batch.py -i ./input -m medium -d cpu
-```
-
-### Poor Transcription Quality
-
-- Try `large-v3` model for latest improvements
-- Enable audio enhancement
-- For non-English, add language parameter to Whisper module
-
-## Advanced Usage
-
-### Custom Audio Filters
-
-**Python:** Edit [lib/audio_enhancer.py](lib/audio_enhancer.py) to adjust the `audio_filter` variable.
-
-**Python:** Edit [lib/audio_enhancer.py](lib/audio_enhancer.py) to adjust the `audio_filter` variable.
-
-### Different Whisper Parameters
-
-**Python:** Edit [lib/whisper_transcriber.py](lib/whisper_transcriber.py) to add language, task, or other Whisper options.
-
-**Python:** Edit [lib/whisper_transcriber.py](lib/whisper_transcriber.py) to add language, task, or other Whisper options.
-
-### Batch Processing Specific Files
-
-**Using uv:**
-
-```bash
-# Process only MP4 files
-uv run transcribe_batch.py -i ./videos
-```
-
-**Using python directly:**
-
-```bash
-# Process only MP4 files
-python transcribe_batch.py -i ./videos
-```
-
-## Performance Tips
-
-- **GPU acceleration**: Use CUDA device with NVIDIA GPU (10-20x faster)
-- **Model selection**: `large-v2` is most accurate but slowest; `medium` is good balance
-- **Batch timing**: Process overnight for large batches
-- **Audio enhancement**: Adds ~30% processing time but improves accuracy
 
 ## License
 
-This is a utility script for personal use under the MIT License.
-Whisper is licensed under MIT by OpenAI.
-
-## Support
-
-For issues with:
-
-- **Whisper**: <https://github.com/openai/whisper>
-- **FFmpeg**: <https://ffmpeg.org/>
-- **This script**: Check the script comments or modify as needed
+MIT
