@@ -14,7 +14,6 @@ export const configSchema = z.object({
 
   // Backend-specific config
   openaiApiKey: z.string().optional(),
-  pythonPath: z.string().optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

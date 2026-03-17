@@ -203,14 +203,18 @@ async function processFile(
 
     await mkdir(outputFolder, { recursive: true });
 
+    const wantTxt = config.outputFormats.includes("txt");
+    const wantSrt = config.outputFormats.includes("srt");
+
     if (transcriptParts.length > 1) {
-      outputTxt = join(outputFolder, `${baseName}.txt`);
-      outputSrt = join(outputFolder, `${baseName}.srt`);
+      outputTxt = wantTxt ? join(outputFolder, `${baseName}.txt`) : null;
+      outputSrt = wantSrt ? join(outputFolder, `${baseName}.srt`) : null;
+      const targets = [outputTxt, outputSrt].filter(Boolean).join(", ");
       onProgress({
         event: "step_start",
         file: filePath,
         step: "merge",
-        message: `${transcriptParts.length} parts -> ${outputTxt}, ${outputSrt}`,
+        message: `${transcriptParts.length} parts -> ${targets}`,
       });
       await mergeTranscripts(transcriptParts, outputTxt, outputSrt);
       onProgress({
@@ -227,19 +231,20 @@ async function processFile(
         message: `Copying transcript files to ${outputFolder}`,
       });
       const part = transcriptParts[0]!;
-      if (part.txtFile && existsSync(part.txtFile)) {
+      if (wantTxt && part.txtFile && existsSync(part.txtFile)) {
         outputTxt = join(outputFolder, `${baseName}.txt`);
         await cp(part.txtFile, outputTxt);
       }
-      if (part.srtFile && existsSync(part.srtFile)) {
+      if (wantSrt && part.srtFile && existsSync(part.srtFile)) {
         outputSrt = join(outputFolder, `${baseName}.srt`);
         await cp(part.srtFile, outputSrt);
       }
+      const produced = [outputTxt && "txt", outputSrt && "srt"].filter(Boolean).join(", ");
       onProgress({
         event: "step_complete",
         file: filePath,
         step: "copy_output",
-        message: `Copied outputs (${outputTxt ? "txt" : ""}${outputTxt && outputSrt ? ", " : ""}${outputSrt ? "srt" : ""})`,
+        message: `Copied outputs (${produced})`,
       });
     }
 
@@ -317,4 +322,23 @@ export async function runPipeline(
   onProgress({ event: "batch_complete", summary });
 
   return { files: results, summary };
+}
+
+/**
+ * Process a single file through the transcription pipeline.
+ */
+export async function runSingleFile(
+  filePath: string,
+  config: Config,
+  backend: TranscriptionBackend,
+  onProgress: ProgressCallback = () => {},
+): Promise<FileResult> {
+  const result = await processFile(filePath, config, backend, 1, 1, onProgress);
+
+  // Cleanup temp files
+  if (!config.keepIntermediateFiles && existsSync(config.tempFolder)) {
+    await rm(config.tempFolder, { recursive: true, force: true });
+  }
+
+  return result;
 }

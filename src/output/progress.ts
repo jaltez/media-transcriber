@@ -28,7 +28,7 @@ export function createHumanProgress(): (event: ProgressEvent) => void {
     switch (event.event) {
       case "batch_start":
         console.error(
-          pc.cyan(`\nFound ${event.totalFiles} file(s) to process\n`),
+          pc.cyan(`\nFound ${event.totalFiles} file(s) to transcribe\n`),
         );
         break;
 
@@ -36,10 +36,10 @@ export function createHumanProgress(): (event: ProgressEvent) => void {
         spinner?.stop();
         console.error(
           pc.green(
-            `[${event.fileNumber}/${event.totalFiles}] Processing: ${event.file}`,
+            `[${event.fileNumber}/${event.totalFiles}] ${event.file}`,
           ),
         );
-        console.error("=".repeat(70));
+        console.error(pc.gray("─".repeat(70)));
         break;
 
       case "step_start":
@@ -77,6 +77,55 @@ export function createHumanProgress(): (event: ProgressEvent) => void {
 
       case "batch_complete":
         // Handled by formatHuman in the main command
+        break;
+    }
+  };
+}
+
+/**
+ * Creates a progress callback for single-file mode (no batch framing).
+ */
+export function createSingleFileProgress(): (event: ProgressEvent) => void {
+  let spinner: Ora | null = null;
+
+  return (event: ProgressEvent) => {
+    switch (event.event) {
+      case "file_start":
+        console.error(pc.cyan(`\nTranscribing: ${event.file}\n`));
+        break;
+
+      case "step_start":
+        spinner = ora({
+          text: stepText(event.step, event.message),
+          stream: process.stderr,
+        }).start();
+        break;
+
+      case "step_progress": {
+        const progressLabel = `[${event.current}/${event.total}]`;
+        const detail = event.message ? ` - ${event.message}` : "";
+
+        if (spinner) {
+          spinner.text = `${stepLabels[event.step] ?? event.step} ${progressLabel}${detail}`;
+        } else {
+          console.error(pc.gray(`  ${stepLabels[event.step] ?? event.step} ${progressLabel}${detail}`));
+        }
+        break;
+      }
+
+      case "step_complete":
+        spinner?.succeed(stepText(event.step, event.message));
+        spinner = null;
+        break;
+
+      case "file_complete":
+        spinner?.stop();
+        if (!event.success) {
+          console.error(pc.red(`\n✗ Transcription failed: ${event.error}\n`));
+        }
+        break;
+
+      default:
         break;
     }
   };

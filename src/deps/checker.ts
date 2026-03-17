@@ -23,128 +23,72 @@ export async function checkCommand(
   }
 }
 
-/** Check if Python is available and return its path */
-export async function findPython(): Promise<DependencyStatus> {
-  // Try common Python names in order of preference
-  for (const cmd of ["python3", "python", "py"]) {
-    try {
-      const args = cmd === "py" ? ["-3", "--version"] : ["--version"];
-      const result = await execa(cmd, args, { timeout: 10_000 });
-      const version = result.stdout.trim() || result.stderr.trim();
-      return { available: true, name: cmd, version };
-    } catch {
-      // continue
-    }
+/** Check if uv is available */
+export async function checkUv(): Promise<DependencyStatus> {
+  try {
+    const result = await execa("uv", ["--version"], { timeout: 10_000 });
+    const version = result.stdout.trim();
+    return { available: true, name: "uv", version };
+  } catch {
+    return {
+      available: false,
+      name: "uv",
+      error: "uv not found in PATH",
+      installHint: getInstallHint("uv"),
+    };
   }
-
-  return {
-    available: false,
-    name: "python",
-    error: "Python not found in PATH",
-    installHint: getInstallHint("python"),
-  };
-}
-
-const PYTHON_CANDIDATES = ["python3", "python", "py"] as const;
-
-function pythonArgs(cmd: string): string[] {
-  return cmd === "py" ? ["-3"] : [];
 }
 
 /**
- * Find a Python interpreter that has a given module installed.
- * Tries all common interpreter names and returns the first match.
- * Uses importlib.util.find_spec for near-instant detection (no heavy imports).
+ * Check if uv is available and the whisper module is installed
+ * in the uv-managed environment.
  */
-export async function findPythonWithModule(
-  moduleName: string,
-): Promise<{ python: DependencyStatus; moduleVersion?: string; resolvedPath?: string }> {
-  for (const cmd of PYTHON_CANDIDATES) {
-    const prefix = pythonArgs(cmd);
-    // First check the interpreter exists
-    try {
-      await execa(cmd, [...prefix, "--version"], { timeout: 10_000 });
-    } catch {
-      continue;
-    }
+export async function checkUvWhisper(): Promise<DependencyStatus> {
+  const uvStatus = await checkUv();
+  if (!uvStatus.available) return uvStatus;
 
-    // Check module existence (fast — no torch import)
-    try {
-      const check = await execa(
-        cmd,
-        [
-          ...prefix,
-          "-c",
-          `import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("${moduleName}") else 1)`,
-        ],
-        { timeout: 10_000 },
-      );
-      if (check.exitCode !== 0) continue;
-    } catch {
-      continue;
-    }
-
-    // Get version + interpreter path
-    let moduleVersion: string | undefined;
-    let resolvedPath: string | undefined;
-    try {
-      const info = await execa(
-        cmd,
-        [
-          ...prefix,
-          "-c",
-          `import sys; print(sys.executable); import importlib.metadata; print(importlib.metadata.version("openai-whisper"))`,
-        ],
-        { timeout: 15_000 },
-      );
-      const lines = info.stdout.trim().split("\n");
-      resolvedPath = lines[0]?.trim();
-      moduleVersion = lines[1]?.trim();
-    } catch {
-      // Non-critical — we still know the module exists
-    }
-
-    const versionResult = await execa(cmd, [...prefix, "--version"], { timeout: 10_000 });
-    const pyVersion = versionResult.stdout.trim() || versionResult.stderr.trim();
-
-    return {
-      python: { available: true, name: cmd, version: pyVersion },
-      moduleVersion,
-      resolvedPath,
-    };
-  }
-
-  // No interpreter has the module — report which interpreters were found
-  const found: string[] = [];
-  for (const cmd of PYTHON_CANDIDATES) {
-    try {
-      await execa(cmd, [...pythonArgs(cmd), "--version"], { timeout: 10_000 });
-      found.push(cmd);
-    } catch {
-      // not available
-    }
-  }
-
-  if (found.length === 0) {
-    return {
-      python: {
+  // Check that whisper module is reachable via uv run
+  try {
+    const check = await execa(
+      "uv",
+      ["run", "python", "-c", 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("whisper") else 1)'],
+      { timeout: 15_000 },
+    );
+    if (check.exitCode !== 0) {
+      return {
         available: false,
-        name: "python",
-        error: "Python not found in PATH",
-        installHint: getInstallHint("python"),
-      },
+        name: "whisper",
+        error: "openai-whisper not found in uv environment",
+        installHint: "Install via: uv add openai-whisper",
+      };
+    }
+  } catch {
+    return {
+      available: false,
+      name: "whisper",
+      error: "openai-whisper not found in uv environment",
+      installHint: "Install via: uv add openai-whisper",
     };
   }
 
+  // Get version info
+  let moduleVersion: string | undefined;
+  try {
+    const info = await execa(
+      "uv",
+      ["run", "python", "-c", 'import importlib.metadata; print(importlib.metadata.version("openai-whisper"))'],
+      { timeout: 15_000 },
+    );
+    moduleVersion = info.stdout.trim();
+  } catch {
+    // Non-critical
+  }
+
+  const versionLabel = moduleVersion ? `v${moduleVersion}` : "installed";
   return {
-    python: {
-      available: false,
-      name: found[0]!,
-      error: `'${moduleName}' not found in any Python interpreter (checked: ${found.join(", ")})`,
-      installHint:
-        `Install via: ${found[0]} -m pip install openai-whisper\n` +
-        `    If using a virtualenv, make sure it is activated or set pythonPath in config.`,
-    },
+    available: true,
+    name: "whisper",
+    version: `${versionLabel} (via uv)`,
   };
 }
 
@@ -162,10 +106,10 @@ function getInstallHint(command: string): string {
       linux:
         "Included with ffmpeg. Install via: sudo apt install ffmpeg",
     },
-    python: {
-      win32: "Install via: winget install Python.Python.3  OR  https://python.org",
-      darwin: "Install via: brew install python3",
-      linux: "Install via: sudo apt install python3",
+    uv: {
+      win32: "Install via: powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"",
+      darwin: "Install via: curl -LsSf https://astral.sh/uv/install.sh | sh",
+      linux: "Install via: curl -LsSf https://astral.sh/uv/install.sh | sh",
     },
   };
 

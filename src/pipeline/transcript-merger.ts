@@ -98,22 +98,24 @@ export function parseSrt(content: string): SrtEntry[] {
  */
 export async function mergeTranscripts(
   parts: TranscriptSegment[],
-  outputTxt: string,
-  outputSrt: string,
+  outputTxt: string | null,
+  outputSrt: string | null,
 ): Promise<void> {
   const sorted = [...parts].sort((a, b) => a.partNumber - b.partNumber);
 
   // Merge TXT files
-  const txtParts: string[] = [];
-  for (const part of sorted) {
-    if (part.txtFile && existsSync(part.txtFile)) {
-      const content = await readFile(part.txtFile, "utf-8");
-      txtParts.push(content);
+  if (outputTxt) {
+    const txtParts: string[] = [];
+    for (const part of sorted) {
+      if (part.txtFile && existsSync(part.txtFile)) {
+        const content = await readFile(part.txtFile, "utf-8");
+        txtParts.push(content);
+      }
     }
-  }
 
-  await mkdir(dirname(outputTxt), { recursive: true });
-  await writeFile(outputTxt, txtParts.join("\n"), "utf-8");
+    await mkdir(dirname(outputTxt), { recursive: true });
+    await writeFile(outputTxt, txtParts.join("\n"), "utf-8");
+  }
 
   // Merge SRT files with timestamp adjustment
   const allEntries: SrtEntry[] = [];
@@ -142,16 +144,18 @@ export async function mergeTranscripts(
   }
 
   // Write merged SRT
-  const srtLines: string[] = [];
-  for (const entry of allEntries) {
-    srtLines.push(String(entry.index));
-    srtLines.push(
-      `${formatSrtTimestamp(entry.startTime)} --> ${formatSrtTimestamp(entry.endTime)}`,
-    );
-    srtLines.push(entry.text);
-    srtLines.push("");
-  }
+  if (outputSrt) {
+    const srtLines: string[] = [];
+    for (const entry of allEntries) {
+      srtLines.push(String(entry.index));
+      srtLines.push(
+        `${formatSrtTimestamp(entry.startTime)} --> ${formatSrtTimestamp(entry.endTime)}`,
+      );
+      srtLines.push(entry.text);
+      srtLines.push("");
+    }
 
-  await mkdir(dirname(outputSrt), { recursive: true });
-  await writeFile(outputSrt, srtLines.join("\n"), "utf-8");
+    await mkdir(dirname(outputSrt), { recursive: true });
+    await writeFile(outputSrt, srtLines.join("\n"), "utf-8");
+  }
 }

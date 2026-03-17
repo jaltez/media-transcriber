@@ -24,7 +24,7 @@ media-transcriber transcribe ./data/input ./data/output
   - Linux: `sudo apt install ffmpeg`
 
 Backend requirements:
-- `whisper-local`: Python 3.10+ with `openai-whisper` installed
+- `whisper-local`: A local Whisper installation available on your system. This can be managed with [uv](https://docs.astral.sh/uv/), `pip`, or another Python environment setup.
 - `whisper-api`: OpenAI API key (`OPENAI_API_KEY` env var or `--openai-api-key`)
 
 ## Usage
@@ -71,7 +71,6 @@ All parameters are passed at execution time (stateless CLI).
 | `enableAudioEnhancement` | boolean | `false` | Enable enhancement filters |
 | `keepIntermediateFiles` | boolean | `false` | Keep temp files with `--include-temp` |
 | `tempFolder` | string | `<outputFolder>/temp` | Temp working folder |
-| `pythonPath` | string | unset | Python path for local backend |
 | `openaiApiKey` | string | env/flag | API key for OpenAI backend |
 
 ## AI Agent Integration

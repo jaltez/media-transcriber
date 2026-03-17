@@ -5,73 +5,36 @@ import { join, basename, extname } from "node:path";
 import type { TranscriptionBackend, TranscribeOptions } from "./types.js";
 import type { Config } from "../config/schema.js";
 import type { DependencyStatus, TranscriptSegment } from "../types/index.js";
-import { findPythonWithModule } from "../deps/checker.js";
+import { checkUvWhisper } from "../deps/checker.js";
 
 /**
  * Local OpenAI Whisper CLI backend.
- * Port of lib/whisper_transcriber.py transcribe_audio()
+ * Invokes whisper via `uv run`.
  */
 export class WhisperLocalBackend implements TranscriptionBackend {
   readonly name = "whisper-local";
   readonly displayName = "Whisper (local)";
 
-  private pythonCmd = "python3";
-  private pythonArgs: string[] = [];
-
-  init(config: Config): void {
-    if (config.pythonPath) {
-      this.pythonCmd = config.pythonPath;
-      this.pythonArgs = [];
-    }
+  init(_config: Config): void {
+    // uv manages the Python environment — no config needed
   }
 
   async checkAvailability(): Promise<DependencyStatus> {
-    // If user specified pythonPath, only check that interpreter
-    if (this.pythonCmd !== "python3") {
-      try {
-        const check = await execa(
-          this.pythonCmd,
-          ["-c", 'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("whisper") else 1)'],
-          { timeout: 10_000 },
-        );
-        if (check.exitCode === 0) {
-          return { available: true, name: this.name, version: `using ${this.pythonCmd}` };
-        }
-      } catch {
-        // fall through
-      }
+    const result = await checkUvWhisper();
+
+    if (!result.available) {
       return {
         available: false,
         name: this.name,
-        error: `openai-whisper not found in configured pythonPath (${this.pythonCmd})`,
-        installHint: `Install via: ${this.pythonCmd} -m pip install openai-whisper`,
+        error: result.error ?? "uv or whisper not found",
+        installHint: result.installHint,
       };
     }
-
-    // Auto-detect: try all Python interpreters for whisper module
-    const result = await findPythonWithModule("whisper");
-
-    if (!result.python.available) {
-      return {
-        available: false,
-        name: this.name,
-        error: result.python.error ?? "Python or whisper not found",
-        installHint: result.python.installHint,
-      };
-    }
-
-    this.pythonCmd = result.python.name;
-    this.pythonArgs = this.pythonCmd === "py" ? ["-3"] : [];
-
-    const versionLabel = result.moduleVersion
-      ? `v${result.moduleVersion}`
-      : "installed";
-    const interpreterLabel = result.resolvedPath ?? this.pythonCmd;
 
     return {
       available: true,
       name: this.name,
-      version: `${versionLabel} (${interpreterLabel})`,
+      version: result.version,
     };
   }
 
@@ -89,23 +52,34 @@ export class WhisperLocalBackend implements TranscriptionBackend {
       env["CUDA_VISIBLE_DEVICES"] = "0";
     }
 
-    const result = await execa(
-      this.pythonCmd,
-      [
-        ...this.pythonArgs,
-        "-m", "whisper",
-        inputFile,
-        "--model", model,
-        "--device", device,
-        "--output_dir", outputDir,
-        "--output_format", "all",
-        "--verbose", "False",
-      ],
-      { env },
-    );
+    let result;
+    try {
+      result = await execa(
+        "uv",
+        [
+          "run", "whisper",
+          inputFile,
+          "--model", model,
+          "--device", device,
+          "--output_dir", outputDir,
+          "--output_format", "all",
+          "--verbose", "False",
+        ],
+        { env, reject: false },
+      );
+    } catch (err) {
+      throw new Error(`Failed to launch whisper: ${err instanceof Error ? err.message : err}`);
+    }
 
     if (result.exitCode !== 0) {
-      throw new Error(`Whisper transcription failed: ${result.stderr}`);
+      const stderr = result.stderr ?? "";
+      if (stderr.includes("no kernel image is available for execution on the device")) {
+        throw new Error(
+          "CUDA error: your GPU is not compatible with the installed PyTorch CUDA build. " +
+          "Run with '-d cpu' to use CPU instead, or install a PyTorch version matching your GPU's compute capability.",
+        );
+      }
+      throw new Error(`Whisper transcription failed: ${stderr}`);
     }
 
     // Find output files
