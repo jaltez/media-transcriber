@@ -7,12 +7,15 @@ import {
   listBackends,
 } from "../../backends/registry.js";
 import { configSchema, defaultConfig } from "../../config/schema.js";
+import { WHISPER_COMMAND_ENV } from "../../deps/whisper.js";
 import type { DependencyStatus } from "../../types/index.js";
 import { ExitCode } from "../../types/index.js";
 import { arch, platform, version as nodeVersion } from "node:process";
 
 interface DoctorOptions {
   backend?: string;
+  apiKey?: string;
+  whisperCommand?: string;
   all?: boolean;
   json?: boolean;
 }
@@ -52,6 +55,8 @@ interface DoctorReport {
 export const doctorCommand = new Command("doctor")
   .description("Check readiness for the default or selected transcription backend")
   .option("-b, --backend <name>", "Backend readiness path to check")
+  .option("--api-key <key>", "API key for API backend readiness (env: OPENAI_API_KEY)")
+  .option("--whisper-command <command>", `Local Whisper command override (env: ${WHISPER_COMMAND_ENV})`)
   .option("--all", "Show all backend availability without making optional backends fatal")
   .option("--json", "Emit machine-readable readiness output")
   .action(async (opts: DoctorOptions) => {
@@ -79,6 +84,8 @@ export const doctorCommand = new Command("doctor")
       const config = configSchema.parse({
         backend: name,
         whisperModel: backend.defaultModel,
+        openaiApiKey: opts.apiKey,
+        localWhisperCommand: opts.whisperCommand ?? process.env[WHISPER_COMMAND_ENV],
       });
       backend.init(config);
       const status = await backend.checkAvailability();

@@ -85,6 +85,8 @@ Check readiness for the default or selected transcription path:
 ```bash
 media-transcriber doctor
 media-transcriber doctor --backend whisper-api
+media-transcriber doctor --backend whisper-api --api-key <key>
+media-transcriber doctor --whisper-command "whisper"
 media-transcriber doctor --all
 media-transcriber doctor --json
 ```
@@ -147,6 +149,7 @@ Options:
 - Checks `ffmpeg` and `ffprobe`
 - Shows system information
 - Checks readiness for the default backend, or a selected backend with `--backend <name>`
+- Accepts `--api-key` and `--whisper-command` so readiness can match a stateless transcribe invocation
 - Use `--all` to show backend inventory without making optional missing backends fatal
 - Use `--json` for machine-readable readiness output
 - Exits with a non-zero code when the selected/default transcription path is not ready
