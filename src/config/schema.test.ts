@@ -7,8 +7,8 @@ describe("configSchema", () => {
     expect(config.inputFolder).toBe("./data/input");
     expect(config.outputFolder).toBe("./data/output");
     expect(config.backend).toBe("whisper-local");
-    expect(config.whisperModel).toBe("large-v2");
-    expect(config.device).toBe("cuda");
+    expect(config.whisperModel).toBe("base");
+    expect(config.device).toBe("auto");
     expect(config.maxDurationSeconds).toBe(1200);
     expect(config.enableAudioEnhancement).toBe(false);
     expect(config.keepIntermediateFiles).toBe(false);
@@ -19,11 +19,13 @@ describe("configSchema", () => {
     const config = configSchema.parse({
       backend: "whisper-api",
       device: "cpu",
+      localWhisperCommand: "whisper",
       maxDurationSeconds: 600,
       enableAudioEnhancement: true,
     });
     expect(config.backend).toBe("whisper-api");
     expect(config.device).toBe("cpu");
+    expect(config.localWhisperCommand).toBe("whisper");
     expect(config.maxDurationSeconds).toBe(600);
     expect(config.enableAudioEnhancement).toBe(true);
   });
@@ -38,6 +40,8 @@ describe("configSchema", () => {
 
   it("provides valid defaultConfig export", () => {
     expect(defaultConfig.backend).toBe("whisper-local");
+    expect(defaultConfig.whisperModel).toBe("base");
+    expect(defaultConfig.device).toBe("auto");
     expect(defaultConfig.outputFormats).toContain("srt");
   });
 });

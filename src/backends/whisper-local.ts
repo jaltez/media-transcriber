@@ -5,41 +5,56 @@ import { join, basename, extname } from "node:path";
 import type { TranscriptionBackend, TranscribeOptions } from "./types.js";
 import type { Config } from "../config/schema.js";
 import type { DependencyStatus, TranscriptSegment } from "../types/index.js";
-import { checkUvWhisper } from "../deps/checker.js";
+import {
+  discoverLocalWhisper,
+  resolveLocalDevice,
+  type CommandSpec,
+} from "../deps/whisper.js";
 
 /**
  * Local OpenAI Whisper CLI backend.
- * Invokes whisper via `uv run`.
+ * Invokes a discovered local Whisper command.
  */
 export class WhisperLocalBackend implements TranscriptionBackend {
   readonly name = "whisper-local";
   readonly displayName = "Whisper (local)";
+  readonly defaultModel = "base";
 
-  init(_config: Config): void {
-    // uv manages the Python environment — no config needed
+  private config: Config | null = null;
+  private commandSpec: CommandSpec | null = null;
+
+  init(config: Config): void {
+    this.config = config;
+    this.commandSpec = null;
   }
 
   async checkAvailability(): Promise<DependencyStatus> {
-    const result = await checkUvWhisper();
+    const result = await discoverLocalWhisper(this.config?.localWhisperCommand);
 
     if (!result.available) {
       return {
         available: false,
         name: this.name,
-        error: result.error ?? "uv or whisper not found",
+        error: result.error ?? "local Whisper not found",
         installHint: result.installHint,
+        source: result.source,
+        command: result.command,
       };
     }
+
+    this.commandSpec = result.commandSpec ?? null;
 
     return {
       available: true,
       name: this.name,
       version: result.version,
+      source: result.source,
+      command: result.command,
     };
   }
 
   async transcribe(options: TranscribeOptions): Promise<TranscriptSegment> {
-    const { inputFile, model, device, outputDir } = options;
+    const { inputFile, model, device, outputDir, outputFormats } = options;
 
     if (!existsSync(inputFile)) {
       throw new Error(`Input file not found: ${inputFile}`);
@@ -47,22 +62,30 @@ export class WhisperLocalBackend implements TranscriptionBackend {
 
     await mkdir(outputDir, { recursive: true });
 
+    const commandSpec = this.commandSpec ?? (await discoverLocalWhisper(this.config?.localWhisperCommand)).commandSpec;
+    if (!commandSpec) {
+      throw new Error("Local Whisper is not available. Run 'media-transcriber setup whisper-local'.");
+    }
+
+    const resolvedDevice = await resolveLocalDevice(commandSpec, device);
+    const outputFormat = outputFormats.length === 1 ? outputFormats[0]! : "all";
+
     const env: Record<string, string> = { ...process.env as Record<string, string> };
-    if (device === "cuda") {
+    if (resolvedDevice === "cuda") {
       env["CUDA_VISIBLE_DEVICES"] = "0";
     }
 
     let result;
     try {
       result = await execa(
-        "uv",
+        commandSpec.command,
         [
-          "run", "whisper",
+          ...commandSpec.args,
           inputFile,
           "--model", model,
-          "--device", device,
+          "--device", resolvedDevice,
           "--output_dir", outputDir,
-          "--output_format", "all",
+          "--output_format", outputFormat,
           "--verbose", "False",
         ],
         { env, reject: false },
@@ -89,9 +112,10 @@ export class WhisperLocalBackend implements TranscriptionBackend {
 
     const txtPath = txtFile ? join(outputDir, txtFile) : null;
     const srtPath = srtFile ? join(outputDir, srtFile) : null;
+    const wantTxt = outputFormats.includes("txt");
 
     // Fallback: if TXT is missing/empty but SRT exists, extract text from SRT
-    if (srtPath && (!txtPath || (existsSync(txtPath) && (await readFile(txtPath, "utf-8")).trim() === ""))) {
+    if (wantTxt && srtPath && (!txtPath || (existsSync(txtPath) && (await readFile(txtPath, "utf-8")).trim() === ""))) {
       const srtContent = await readFile(srtPath, "utf-8");
       const textLines: string[] = [];
 
@@ -122,5 +146,9 @@ export class WhisperLocalBackend implements TranscriptionBackend {
 
   supportedModels(): string[] {
     return ["tiny", "base", "small", "medium", "large", "large-v2", "large-v3", "turbo"];
+  }
+
+  capabilities() {
+    return {};
   }
 }

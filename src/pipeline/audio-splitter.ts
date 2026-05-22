@@ -51,7 +51,7 @@ export async function splitAudio(
   const prefix = outputPrefix || stem;
 
   const duration = await getAudioDuration(inputFile);
-  const partDuration = Math.floor(duration / numParts);
+  const partDuration = duration / numParts;
 
   const splitFiles: string[] = [];
 

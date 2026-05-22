@@ -1,5 +1,5 @@
 import { readdir, cp, rm, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join, extname, basename } from "node:path";
 import type { Config } from "../config/schema.js";
 import type { TranscriptionBackend } from "../backends/types.js";
@@ -24,6 +24,23 @@ export function calculateSplitParts(
   maxDurationSeconds: number,
 ): number {
   return Math.max(1, Math.ceil(durationSeconds / maxDurationSeconds));
+}
+
+/**
+ * Determine split count from duration and backend upload-size constraints.
+ */
+export function calculateSplitPartsForConstraints(
+  durationSeconds: number,
+  maxDurationSeconds: number,
+  fileSizeBytes: number,
+  maxInputBytes?: number,
+): number {
+  const durationParts = calculateSplitParts(durationSeconds, maxDurationSeconds);
+  const sizeParts = maxInputBytes && fileSizeBytes > maxInputBytes
+    ? Math.ceil(fileSizeBytes / maxInputBytes)
+    : 1;
+
+  return Math.max(durationParts, sizeParts);
 }
 
 /**
@@ -111,19 +128,31 @@ async function processFile(
       message: `Duration ${Math.round(durationSeconds)}s (split threshold ${config.maxDurationSeconds}s)`,
     });
 
-    const needsSplit = durationSeconds > config.maxDurationSeconds;
+    const mp3SizeBytes = statSync(mp3File).size;
+    const maxInputBytes = backend.capabilities().maxInputBytes;
+    const numParts = calculateSplitPartsForConstraints(
+      durationSeconds,
+      config.maxDurationSeconds,
+      mp3SizeBytes,
+      maxInputBytes,
+    );
+    const needsSplit = numParts > 1;
     let audioFiles: string[];
 
     if (needsSplit) {
-      const numParts = calculateSplitParts(
-        durationSeconds,
-        config.maxDurationSeconds,
-      );
+      const reasons = [
+        durationSeconds > config.maxDurationSeconds
+          ? `${Math.round(durationSeconds)}s duration`
+          : null,
+        maxInputBytes && mp3SizeBytes > maxInputBytes
+          ? `${Math.round(mp3SizeBytes / 1024 / 1024)}MB backend limit`
+          : null,
+      ].filter(Boolean).join(", ");
       onProgress({
         event: "step_start",
         file: filePath,
         step: "split",
-        message: `${Math.round(durationSeconds)}s file -> ${numParts} parts`,
+        message: `${reasons} -> ${numParts} parts`,
       });
       audioFiles = await splitAudio(mp3File, numParts, tempFolder, baseName);
       onProgress({
@@ -186,6 +215,7 @@ async function processFile(
         model: config.whisperModel,
         device: config.device,
         outputDir: partDir,
+        outputFormats: config.outputFormats,
       });
 
       transcriptParts.push({ ...segment, partNumber: partNum });

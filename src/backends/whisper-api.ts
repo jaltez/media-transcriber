@@ -6,6 +6,7 @@ import type { Config } from "../config/schema.js";
 import type { DependencyStatus, TranscriptSegment } from "../types/index.js";
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB OpenAI limit
+const PREPROCESSING_MAX_FILE_SIZE = 24 * 1024 * 1024;
 
 /**
  * OpenAI Whisper API backend.
@@ -14,6 +15,7 @@ const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25 MB OpenAI limit
 export class WhisperApiBackend implements TranscriptionBackend {
   readonly name = "whisper-api";
   readonly displayName = "Whisper (OpenAI API)";
+  readonly defaultModel = "whisper-1";
 
   private apiKey?: string;
 
@@ -36,12 +38,12 @@ export class WhisperApiBackend implements TranscriptionBackend {
   }
 
   async transcribe(options: TranscribeOptions): Promise<TranscriptSegment> {
-    const { inputFile, outputDir } = options;
+    const { inputFile, outputDir, model, outputFormats } = options;
     const key = this.apiKey || process.env["OPENAI_API_KEY"];
 
     if (!key) {
       throw new Error(
-        "OpenAI API key not configured. Set OPENAI_API_KEY or pass --openai-api-key.",
+        "OpenAI API key not configured. Set OPENAI_API_KEY or pass --api-key.",
       );
     }
 
@@ -60,16 +62,22 @@ export class WhisperApiBackend implements TranscriptionBackend {
     await mkdir(outputDir, { recursive: true });
 
     const stem = basename(inputFile, extname(inputFile));
+    const wantSrt = outputFormats.includes("srt");
+    const wantTxt = outputFormats.includes("txt");
+    let srtPath: string | null = null;
+    let txtPath: string | null = null;
 
-    // Request SRT format
-    const srtContent = await this.callApi(key, inputFile, "srt");
-    const srtPath = join(outputDir, `${stem}.srt`);
-    await writeFile(srtPath, srtContent, "utf-8");
+    if (wantSrt) {
+      const srtContent = await this.callApi(key, inputFile, model, "srt");
+      srtPath = join(outputDir, `${stem}.srt`);
+      await writeFile(srtPath, srtContent, "utf-8");
+    }
 
-    // Request text format
-    const txtContent = await this.callApi(key, inputFile, "text");
-    const txtPath = join(outputDir, `${stem}.txt`);
-    await writeFile(txtPath, txtContent, "utf-8");
+    if (wantTxt) {
+      const txtContent = await this.callApi(key, inputFile, model, "text");
+      txtPath = join(outputDir, `${stem}.txt`);
+      await writeFile(txtPath, txtContent, "utf-8");
+    }
 
     return {
       txtFile: txtPath,
@@ -81,6 +89,7 @@ export class WhisperApiBackend implements TranscriptionBackend {
   private async callApi(
     apiKey: string,
     filePath: string,
+    model: string,
     responseFormat: "srt" | "text" | "json" | "verbose_json" | "vtt",
   ): Promise<string> {
     // Build multipart form data
@@ -92,7 +101,7 @@ export class WhisperApiBackend implements TranscriptionBackend {
 
     const formData = new FormData();
     formData.append("file", new Blob([fileBuffer]), fileName);
-    formData.append("model", "whisper-1");
+    formData.append("model", model);
     formData.append("response_format", responseFormat);
 
     const response = await fetch(
@@ -118,5 +127,9 @@ export class WhisperApiBackend implements TranscriptionBackend {
 
   supportedModels(): string[] {
     return ["whisper-1"];
+  }
+
+  capabilities() {
+    return { maxInputBytes: PREPROCESSING_MAX_FILE_SIZE };
   }
 }

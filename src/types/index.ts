@@ -16,6 +16,12 @@ export const SUPPORTED_EXTENSIONS = [
 
 export type SupportedExtension = (typeof SUPPORTED_EXTENSIONS)[number];
 
+/** Output formats supported by Media Transcriber */
+export type OutputFormat = "txt" | "srt";
+
+/** Device policy for local transcription */
+export type DevicePolicy = "auto" | "cuda" | "cpu";
+
 /** A single SRT subtitle entry */
 export interface SrtEntry {
   index: number;
@@ -63,6 +69,8 @@ export interface DependencyStatus {
   version?: string;
   error?: string;
   installHint?: string;
+  source?: string;
+  command?: string;
 }
 
 /** Progress event emitted during pipeline execution */

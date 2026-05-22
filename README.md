@@ -11,8 +11,11 @@ npx media-transcriber doctor
 # Or install globally
 npm install -g media-transcriber
 
-# Check your machine
+# Check readiness for the default local backend
 media-transcriber doctor
+
+# If readiness fails, run guided setup
+media-transcriber setup whisper-local
 
 # Transcribe a single file
 media-transcriber transcribe ./meeting.mp4
@@ -30,8 +33,10 @@ media-transcriber transcribe ./data/input ./data/output
   - Linux: `sudo apt install ffmpeg`
 
 Backend requirements:
-- `whisper-local`: A local Whisper installation available on your system. This can be managed with [uv](https://docs.astral.sh/uv/), `pip`, or another Python environment setup.
+- `whisper-local`: A usable local Whisper installation. This can come from PATH, [uv](https://docs.astral.sh/uv/) tool installs, `pipx`, `pip`, or an active Python environment. Use `media-transcriber setup whisper-local` for guided setup.
 - `whisper-api`: OpenAI API key (`OPENAI_API_KEY` env var or `--api-key`)
+
+`uv add openai-whisper` is only appropriate inside a Python project. For general CLI setup, prefer a tool-style install such as `uv tool install openai-whisper`, `pipx install openai-whisper`, or `python -m pip install -U openai-whisper`.
 
 ## Usage
 
@@ -47,8 +52,12 @@ media-transcriber transcribe ./recordings/interview.mp4 ./transcripts
 # Folder input
 media-transcriber transcribe ./recordings ./transcripts
 
-# Model and device
+# Preset, model, and device
+media-transcriber transcribe ./data/input ./data/output --preset accurate
 media-transcriber transcribe ./data/input ./data/output -m medium -d cpu
+
+# Custom local Whisper command
+media-transcriber transcribe ./meeting.mp4 --whisper-command "whisper"
 
 # OpenAI API backend
 media-transcriber transcribe ./data/input ./data/output -b whisper-api --api-key <key>
@@ -71,11 +80,25 @@ media-transcriber transcribe ./data/input ./data/output --json
 
 ### Doctor
 
-Check system dependencies and backend availability:
+Check readiness for the default or selected transcription path:
 
 ```bash
 media-transcriber doctor
+media-transcriber doctor --backend whisper-api
+media-transcriber doctor --all
+media-transcriber doctor --json
 ```
+
+### Setup
+
+Run guided setup when readiness fails:
+
+```bash
+media-transcriber setup whisper-local
+media-transcriber setup whisper-api
+```
+
+Setup can offer to run package managers after confirmation, validates the result, and can run an optional smoke test. It does not write Media Transcriber config files or store API keys.
 
 ## Execution Options
 
@@ -86,14 +109,16 @@ All parameters are passed at execution time (stateless CLI).
 | `input` | string | required | Input file or folder |
 | `output` | string | optional for files, required for folders | Output folder |
 | `backend` | string | `whisper-local` | Transcription backend |
-| `whisperModel` | string | `large-v2` | Model name |
-| `device` | `cuda` or `cpu` | `cuda` | Processing device |
+| `whisperModel` | string | backend default | Model name |
+| `preset` | `fast`, `balanced`, or `accurate` | unset | Friendly quality preset |
+| `device` | `auto`, `cuda`, or `cpu` | `auto` | Processing device policy |
 | `maxDurationSeconds` | number | `1200` | Split files longer than this threshold |
 | `enableAudioEnhancement` | boolean | `false` | Enable enhancement filters |
 | `keepIntermediateFiles` | boolean | `false` | Keep temp files with `--keep-temp` |
 | `tempFolder` | string | `<outputFolder>/temp` | Temp working folder |
 | `outputFormats` | `txt`, `srt`, or both | `txt,srt` | Output transcript formats |
 | `openaiApiKey` | string | env/flag | API key for OpenAI backend |
+| `localWhisperCommand` | string | env/flag | Override command for local Whisper |
 
 ## Commands
 
@@ -105,13 +130,15 @@ All parameters are passed at execution time (stateless CLI).
 
 Options:
 
-- `-m, --model <name>`: Whisper model name
-- `-d, --device <type>`: Processing device, typically `cuda` or `cpu`
+- `-m, --model <name>`: Backend model name
+- `--preset <name>`: Quality preset: `fast`, `balanced`, or `accurate`
+- `-d, --device <type>`: Processing device: `auto`, `cuda`, or `cpu`
 - `-b, --backend <name>`: Transcription backend
 - `--split-threshold <seconds>`: Split files longer than this duration before transcription
 - `--enhance-audio`: Apply audio enhancement before transcription
 - `--keep-temp`: Keep intermediate files in the temp folder
 - `--api-key <key>`: API key for API-based backends
+- `--whisper-command <command>`: Override local Whisper command; can also use `MEDIA_TRANSCRIBER_WHISPER_COMMAND`
 - `-f, --format <formats>`: Comma-separated output formats, such as `txt`, `srt`, or `txt,srt`
 - `--json`: Emit machine-readable output to stdout and NDJSON progress events to stderr
 
@@ -119,8 +146,17 @@ Options:
 
 - Checks `ffmpeg` and `ffprobe`
 - Shows system information
-- Checks registered backends and reports availability
-- Exits with a non-zero code when required dependencies are missing
+- Checks readiness for the default backend, or a selected backend with `--backend <name>`
+- Use `--all` to show backend inventory without making optional missing backends fatal
+- Use `--json` for machine-readable readiness output
+- Exits with a non-zero code when the selected/default transcription path is not ready
+
+### `setup [backend]`
+
+- Guides FFmpeg/ffprobe installation when missing
+- Guides local Whisper setup through uv tool, pipx, pip, or existing installs
+- Validates API credentials without storing secrets
+- Offers an optional smoke test after readiness succeeds
 
 ## AI Agent Integration
 

@@ -6,6 +6,13 @@ import {
   getBackend,
   listBackends,
 } from "../../backends/registry.js";
+import { validateBackendModel } from "../../backends/types.js";
+import {
+  isQualityPreset,
+  modelForPreset,
+  type QualityPreset,
+} from "../../config/presets.js";
+import { WHISPER_COMMAND_ENV } from "../../deps/whisper.js";
 import { findInputFiles, runPipeline, runSingleFile } from "../../pipeline/orchestrator.js";
 import { formatJson, formatHuman } from "../../output/formatter.js";
 import { createHumanProgress, createJsonProgress, createSingleFileProgress } from "../../output/progress.js";
@@ -18,6 +25,7 @@ const SUPPORTED_FORMATS_DISPLAY = SUPPORTED_EXTENSIONS.map(e => e.slice(1)).join
 
 interface TranscribeOptions {
   model?: string;
+  preset?: QualityPreset;
   device?: string;
   backend?: string;
   splitThreshold?: number;
@@ -25,6 +33,7 @@ interface TranscribeOptions {
   keepTemp?: boolean;
   apiKey?: string;
   format?: string[];
+  whisperCommand?: string;
   json?: boolean;
 }
 
@@ -38,7 +47,10 @@ function parseSeconds(value: string): number {
 
 function parseFormats(value: string): string[] {
   const valid = ["txt", "srt"];
-  const formats = value.split(",").map(f => f.trim().toLowerCase());
+  const formats = [...new Set(value.split(",").map(f => f.trim().toLowerCase()).filter(Boolean))];
+  if (formats.length === 0) {
+    throw new InvalidArgumentError(`At least one format is required. Valid formats: ${valid.join(", ")}`);
+  }
   for (const f of formats) {
     if (!valid.includes(f)) {
       throw new InvalidArgumentError(`Unknown format '${f}'. Valid formats: ${valid.join(", ")}`);
@@ -47,17 +59,27 @@ function parseFormats(value: string): string[] {
   return formats;
 }
 
+function parsePreset(value: string): QualityPreset {
+  const preset = value.trim().toLowerCase();
+  if (!isQualityPreset(preset)) {
+    throw new InvalidArgumentError("Unknown preset. Valid presets: fast, balanced, accurate");
+  }
+  return preset;
+}
+
 export const transcribeCommand = new Command("transcribe")
   .description("Transcribe audio/video files to text and subtitles")
   .argument("<input>", "Audio/video file or folder to transcribe")
   .argument("[output]", "Output folder (default: next to input file, required for folders)")
-  .option("-m, --model <name>", "Whisper model name", "large-v2")
-  .option("-d, --device <type>", "Processing device", "cuda")
+  .option("-m, --model <name>", "Backend model name")
+  .option("--preset <name>", "Quality preset: fast, balanced, accurate", parsePreset)
+  .option("-d, --device <type>", "Processing device: auto, cuda, or cpu")
   .option("-b, --backend <name>", "Transcription backend", "whisper-local")
   .option("--split-threshold <seconds>", "Split files longer than this duration", parseSeconds)
   .option("--enhance-audio", "Apply noise reduction and audio enhancement")
   .option("--keep-temp", "Keep intermediate files in output/temp folder")
   .option("--api-key <key>", "API key for the backend (env: OPENAI_API_KEY)", process.env["OPENAI_API_KEY"])
+  .option("--whisper-command <command>", `Local Whisper command override (env: ${WHISPER_COMMAND_ENV})`)
   .option("-f, --format <formats>", "Output formats, comma-separated: txt, srt", parseFormats)
   .option("--json", "Machine-readable JSON output for scripts and AI agents")
   .addHelpText("after", `
@@ -69,9 +91,11 @@ Examples:
   $ media-transcriber transcribe meeting.mp4 ./out          Single file to specific folder
   $ media-transcriber transcribe ./recordings ./output      Batch transcribe a folder
   $ media-transcriber transcribe ./in ./out -b whisper-api  Use OpenAI Whisper API
-  $ media-transcriber transcribe ./in ./out --model small   Use a faster model
+  $ media-transcriber transcribe ./in ./out --preset accurate  Use a higher-quality local model
+  $ media-transcriber transcribe ./in ./out --model small      Use a specific backend model
   $ media-transcriber transcribe ./in ./out -f srt          Output only SRT subtitles
-  $ media-transcriber doctor                                Check dependencies
+  $ media-transcriber doctor                                Check readiness
+  $ media-transcriber setup whisper-local                   Guided local setup
 `)
   .action(async (input: string, output: string | undefined, opts: TranscribeOptions) => {
     const jsonMode = opts.json === true;
@@ -126,20 +150,49 @@ Examples:
     const inputFolder = isSingleFile ? dirname(input) : input;
     const outputFormats = opts.format ?? ["txt", "srt"];
 
+    if (opts.model && opts.preset) {
+      const msg = "Use either --model or --preset, not both.";
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "config_error", message: msg }));
+      } else {
+        console.error(pc.red(msg));
+      }
+      process.exit(ExitCode.CONFIG_ERROR);
+    }
+
+    registerBuiltinBackends();
+    const backendName = opts.backend ?? "whisper-local";
+    const backend = getBackend(backendName);
+
+    if (!backend) {
+      const available = listBackends().join(", ");
+      const msg = `Unknown backend '${backendName}'.\nAvailable backends: ${available}\nRun 'media-transcriber doctor --all' to check backend availability.`;
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "config_error", message: `Unknown backend '${backendName}'. Available: ${available}` }));
+      } else {
+        console.error(pc.red(msg));
+      }
+      process.exit(ExitCode.CONFIG_ERROR);
+    }
+
+    const selectedModel = opts.model
+      ?? (opts.preset ? modelForPreset(opts.preset, backend.name, backend.defaultModel) : backend.defaultModel);
+
     let config: Config;
     try {
       config = configSchema.parse({
         inputFolder,
         outputFolder,
         tempFolder: join(outputFolder, "temp"),
-        backend: opts.backend,
-        whisperModel: opts.model,
+        backend: backend.name,
+        whisperModel: selectedModel,
         device: opts.device,
         maxDurationSeconds: opts.splitThreshold,
         enableAudioEnhancement: opts.enhanceAudio === true,
         keepIntermediateFiles: opts.keepTemp === true,
         openaiApiKey: opts.apiKey,
         outputFormats,
+        localWhisperCommand: opts.whisperCommand ?? process.env[WHISPER_COMMAND_ENV],
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -147,6 +200,16 @@ Examples:
         console.log(JSON.stringify({ error: "config_error", message: msg }));
       } else {
         console.error(pc.red(`Invalid configuration: ${msg}`));
+      }
+      process.exit(ExitCode.CONFIG_ERROR);
+    }
+
+    const modelError = validateBackendModel(backend, config.whisperModel);
+    if (modelError) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "config_error", message: modelError }));
+      } else {
+        console.error(pc.red(modelError));
       }
       process.exit(ExitCode.CONFIG_ERROR);
     }
@@ -164,24 +227,9 @@ Examples:
         if (!ffmpegStatus.ffprobe.available && ffmpegStatus.ffprobe.installHint) {
           console.error(pc.yellow(`  ${ffmpegStatus.ffprobe.installHint}`));
         }
-        console.error(pc.gray("\nRun 'media-transcriber doctor' for detailed diagnostics.\n"));
+        console.error(pc.gray(`\nRun 'media-transcriber setup ${config.backend}' for guided setup, or 'media-transcriber doctor' for detailed diagnostics.\n`));
       }
       process.exit(ExitCode.MISSING_DEPENDENCY);
-    }
-
-    // Register and select backend
-    registerBuiltinBackends();
-    const backend = getBackend(config.backend);
-
-    if (!backend) {
-      const available = listBackends().join(", ");
-      const msg = `Unknown backend '${config.backend}'.\nAvailable backends: ${available}\nRun 'media-transcriber doctor' to check backend availability.`;
-      if (jsonMode) {
-        console.log(JSON.stringify({ error: "config_error", message: `Unknown backend '${config.backend}'. Available: ${available}` }));
-      } else {
-        console.error(pc.red(msg));
-      }
-      process.exit(ExitCode.CONFIG_ERROR);
     }
 
     backend.init(config);
@@ -196,7 +244,7 @@ Examples:
         if (backendStatus.installHint) {
           console.error(pc.yellow(`  ${backendStatus.installHint}`));
         }
-        console.error(pc.gray("\nRun 'media-transcriber doctor' for detailed diagnostics.\n"));
+        console.error(pc.gray(`\nRun 'media-transcriber setup ${config.backend}' for guided setup, or 'media-transcriber doctor --backend ${config.backend}' for detailed diagnostics.\n`));
       }
       process.exit(ExitCode.MISSING_DEPENDENCY);
     }
