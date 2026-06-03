@@ -1,6 +1,6 @@
 {
   "name": "media-transcriber",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Batch transcribe audio/video files using pluggable AI backends (Whisper, OpenAI API, and more)",
   "homepage": "https://github.com/jaltez/media-transcriber#readme",
   "bugs": {
