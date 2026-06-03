@@ -18,7 +18,7 @@ import {
 export class WhisperLocalBackend implements TranscriptionBackend {
   readonly name = "whisper-local";
   readonly displayName = "Whisper (local)";
-  readonly defaultModel = "base";
+  readonly defaultModel = "large-v2";
 
   private config: Config | null = null;
   private commandSpec: CommandSpec | null = null;
@@ -70,7 +70,7 @@ export class WhisperLocalBackend implements TranscriptionBackend {
     const resolvedDevice = await resolveLocalDevice(commandSpec, device);
     const outputFormat = outputFormats.length === 1 ? outputFormats[0]! : "all";
 
-    const env: Record<string, string> = { ...process.env as Record<string, string> };
+    const env: Record<string, string> = { ...process.env as Record<string, string>, PYTHONIOENCODING: "utf-8" };
     if (resolvedDevice === "cuda") {
       env["CUDA_VISIBLE_DEVICES"] = "0";
     }

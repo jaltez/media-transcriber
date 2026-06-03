@@ -7,7 +7,7 @@ export const configSchema = z.object({
   outputFolder: z.string().default("./data/output"),
   tempFolder: z.string().default("./data/temp"),
   backend: z.string().default("whisper-local"),
-  whisperModel: z.string().default("base"),
+  whisperModel: z.string().default("large-v2"),
   device: z.enum(["auto", "cuda", "cpu"]).default("auto"),
   maxDurationSeconds: z.number().int().positive().default(1200),
   enableAudioEnhancement: z.boolean().default(false),

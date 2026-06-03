@@ -131,6 +131,16 @@ export async function resolveLocalDevice(
   return "cpu";
 }
 
+/**
+ * Returns a process.env copy with PYTHONIOENCODING=utf-8.
+ * On Windows, the default console encoding (cp1252) cannot represent
+ * some Unicode characters in Whisper's help text (e.g. ideographic period),
+ * causing the CLI to crash with UnicodeEncodeError before printing usage info.
+ */
+function pythonSafeEnv(): Record<string, string> {
+  return { ...process.env as Record<string, string>, PYTHONIOENCODING: "utf-8" };
+}
+
 async function checkWhisperSpec(
   spec: CommandSpec,
   overrideWasExplicit: boolean,
@@ -139,6 +149,7 @@ async function checkWhisperSpec(
     const result = await execa(spec.command, [...spec.args, "--help"], {
       timeout: 15_000,
       reject: false,
+      env: pythonSafeEnv(),
     });
     const output = `${result.stdout}\n${result.stderr}`;
     if (result.exitCode === 0 || output.toLowerCase().includes("usage:")) {
