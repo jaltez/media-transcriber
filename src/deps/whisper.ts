@@ -306,9 +306,16 @@ async function hasCudaForSpec(spec: CommandSpec): Promise<boolean> {
       [
         ...pythonCommand.args,
         "-c",
-        'import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)',
+        // torch.cuda.is_available() returns True even when the installed
+        // PyTorch CUDA build lacks kernel images for the GPU's compute
+        // capability (e.g. RTX 5080 Blackwell / sm_120).  We perform a tiny
+        // tensor operation on the GPU to confirm the device is truly usable.
+        'import torch;' +
+        'assert torch.cuda.is_available(), "CUDA not available";' +
+        'torch.zeros(1, device="cuda");' +
+        'print("ok")',
       ],
-      { timeout: 10_000, reject: false },
+      { timeout: 15_000, reject: false },
     );
     return result.exitCode === 0;
   } catch {
