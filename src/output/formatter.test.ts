@@ -10,7 +10,7 @@ describe("formatHuman", () => {
           input: "input/audio.wav",
           output: {
             txt: null,
-            srt: "C:\\work\\out\\audio.srt",
+            srt: "/work/out/audio.srt",
           },
           durationSeconds: 42,
           backend: "whisper-local",
@@ -28,6 +28,6 @@ describe("formatHuman", () => {
 
     const text = formatHuman(result);
     expect(text).toContain("Output:");
-    expect(text).toContain("C:\\work\\out");
+    expect(text).toContain("/work/out");
   });
 });

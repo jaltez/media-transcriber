@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { transcribeCommand } from "./cli/commands/transcribe.js";
+import { enhanceCommand } from "./cli/commands/enhance.js";
 import { doctorCommand } from "./cli/commands/doctor.js";
 import { setupCommand } from "./cli/commands/setup.js";
 import { packageVersion } from "./version.js";
@@ -14,6 +15,7 @@ const program = new Command()
 Examples:
   $ media-transcriber transcribe recording.mp4           Transcribe a single file
   $ media-transcriber transcribe ./recordings ./output   Batch transcribe a folder
+  $ media-transcriber enhance noisy.wav                Pre-clean audio before transcribing
   $ media-transcriber doctor                             Check readiness
   $ media-transcriber setup whisper-local                Guided setup
 `);
@@ -21,6 +23,6 @@ Examples:
 // Register subcommands
 program.addCommand(transcribeCommand, { isDefault: true });
 program.addCommand(doctorCommand);
+program.addCommand(enhanceCommand);
 program.addCommand(setupCommand);
-
 program.parse();

@@ -1,4 +1,4 @@
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { configSchema, type Config } from "../../config/schema.js";
 import { checkFfmpeg } from "../../deps/ffmpeg.js";
 import {
@@ -6,17 +6,22 @@ import {
   getBackend,
   listBackends,
 } from "../../backends/registry.js";
-import { validateBackendModel } from "../../backends/types.js";
+import {
+  getEnhancer,
+  listEnhancers,
+  registerBuiltinEnhancers,
+} from "../../enhancers/registry.js";
+import { ENHANCER_IDS, ExitCode, isEnhancerId, SUPPORTED_EXTENSIONS, type EnhancerId } from "../../types/index.js";
 import {
   isQualityPreset,
   modelForPreset,
   type QualityPreset,
 } from "../../config/presets.js";
 import { WHISPER_COMMAND_ENV } from "../../deps/whisper.js";
+import { validateBackendModel } from "../../backends/types.js";
 import { findInputFiles, runPipeline, runSingleFile } from "../../pipeline/orchestrator.js";
 import { formatJson, formatHuman } from "../../output/formatter.js";
 import { createHumanProgress, createJsonProgress, createSingleFileProgress } from "../../output/progress.js";
-import { ExitCode, SUPPORTED_EXTENSIONS } from "../../types/index.js";
 import pc from "picocolors";
 import { join, dirname, extname } from "node:path";
 import { existsSync, statSync } from "node:fs";
@@ -28,13 +33,38 @@ interface TranscribeOptions {
   preset?: QualityPreset;
   device?: string;
   backend?: string;
+  enhanceProfile?: "asr" | "master";
   splitThreshold?: number;
+  enhance?: boolean | string;
   enhanceAudio?: boolean;
+  declick?: boolean;
+  humNotch?: boolean;
+  howlNotch?: boolean;
+  dfnAtten?: number;
+  allowUpload?: boolean;
   keepTemp?: boolean;
   apiKey?: string;
   format?: string[];
   whisperCommand?: string;
   json?: boolean;
+}
+
+
+
+function parseEnhanceProfile(value: string): "asr" | "master" {
+  const profile = value.trim().toLowerCase();
+  if (profile !== "asr" && profile !== "master") {
+    throw new InvalidArgumentError("Unknown enhancement profile. Valid profiles: asr, master");
+  }
+  return profile;
+}
+
+function parseAttenDb(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 40) {
+    throw new InvalidArgumentError("Must be an integer between 0 and 40 (dB).");
+  }
+  return parsed;
 }
 
 function parseSeconds(value: string): number {
@@ -76,7 +106,14 @@ export const transcribeCommand = new Command("transcribe")
   .option("-d, --device <type>", "Processing device: auto, cuda, or cpu")
   .option("-b, --backend <name>", "Transcription backend", "whisper-local")
   .option("--split-threshold <seconds>", "Split files longer than this duration", parseSeconds)
-  .option("--enhance-audio", "Apply noise reduction and audio enhancement")
+  .option("--enhance [engine]", "Enhance audio before transcription: basic, deepfilternet, unise (default engine: basic)")
+  .addOption(new Option("--enhance-audio", "Deprecated alias for --enhance basic").hideHelp())
+  .option("--enhance-profile <profile>", "Enhancement post-processing: asr (transcription) or master (listening)", parseEnhanceProfile)
+  .option("--declick", "Add declicking to the enhancement chain")
+  .option("--no-hum-notch", "Skip mains-hum analysis and notch filtering during enhancement")
+  .option("--howl-notch", "Also notch sustained feedback howls detected during enhancement")
+  .option("--dfn-atten <dB>", "DeepFilterNet attenuation limit in dB (protects speech in mixed content)", parseAttenDb)
+  .option("--allow-upload", "Consent to upload audio for remote enhancement engines (env: MEDIA_TRANSCRIBER_ALLOW_UPLOAD)")
   .option("--keep-temp", "Keep intermediate files in output/temp folder")
   .option("--api-key <key>", "API key for the backend (env: OPENAI_API_KEY)", process.env["OPENAI_API_KEY"])
   .option("--whisper-command <command>", `Local Whisper command override (env: ${WHISPER_COMMAND_ENV})`)
@@ -86,14 +123,21 @@ export const transcribeCommand = new Command("transcribe")
 Supported input formats:
   ${SUPPORTED_FORMATS_DISPLAY}
 
+Audio enhancement engines (--enhance):
+  basic          FFmpeg denoise + analysis-driven hum notches (no extra dependencies)
+  deepfilternet  DeepFilterNet 3 neural denoiser (optional install; see 'setup deepfilternet')
+  unise          UniSE remote restoration (experimental; uploads audio, needs --allow-upload)
+
 Examples:
   $ media-transcriber transcribe recording.mp4              Transcribe a single file
   $ media-transcriber transcribe meeting.mp4 ./out          Single file to specific folder
   $ media-transcriber transcribe ./recordings ./output      Batch transcribe a folder
+  $ media-transcriber transcribe ./in ./out --enhance       Enhance degraded audio first
   $ media-transcriber transcribe ./in ./out -b whisper-api  Use OpenAI Whisper API
   $ media-transcriber transcribe ./in ./out --preset accurate  Use a higher-quality local model
   $ media-transcriber transcribe ./in ./out --model small      Use a specific backend model
   $ media-transcriber transcribe ./in ./out -f srt          Output only SRT subtitles
+  $ media-transcriber enhance noisy.wav                     Enhance audio without transcribing
   $ media-transcriber doctor                                Check readiness
   $ media-transcriber setup whisper-local                   Guided local setup
 `)
@@ -159,6 +203,24 @@ Examples:
       }
       process.exit(ExitCode.CONFIG_ERROR);
     }
+    // Resolve the enhancement engine (optional extra, off by default)
+    let enhancerName: "none" | EnhancerId = "none";
+    if (typeof opts.enhance === "string" || opts.enhance === true || opts.enhanceAudio === true) {
+      const requested = typeof opts.enhance === "string" ? opts.enhance.trim().toLowerCase() : "basic";
+      if (!isEnhancerId(requested)) {
+        const msg = `Unknown enhancement engine '${requested}'.\nAvailable engines: ${ENHANCER_IDS.join(", ")}\nRun 'media-transcriber doctor --enhancer <name>' to check enhancer availability.`;
+        if (jsonMode) {
+          console.log(JSON.stringify({ error: "config_error", message: `Unknown enhancement engine '${requested}'. Available: ${ENHANCER_IDS.join(", ")}` }));
+        } else {
+          console.error(pc.red(msg));
+        }
+        process.exit(ExitCode.CONFIG_ERROR);
+      }
+      enhancerName = requested;
+    }
+    if (opts.enhanceAudio === true && typeof opts.enhance !== "string" && opts.enhance !== true) {
+      console.error(pc.yellow("Note: --enhance-audio is deprecated; use --enhance [engine]"));
+    }
 
     registerBuiltinBackends();
     const backendName = opts.backend ?? "whisper-local";
@@ -188,7 +250,14 @@ Examples:
         whisperModel: selectedModel,
         device: opts.device,
         maxDurationSeconds: opts.splitThreshold,
-        enableAudioEnhancement: opts.enhanceAudio === true,
+        enhancer: enhancerName,
+        enhanceProfile: opts.enhanceProfile,
+        enhanceOptions: {
+          humNotch: opts.humNotch !== false,
+          howlNotch: opts.howlNotch === true,
+          dfnAttenLimDb: opts.dfnAtten,
+        },
+        allowUpload: opts.allowUpload === true || process.env["MEDIA_TRANSCRIBER_ALLOW_UPLOAD"] === "1",
         keepIntermediateFiles: opts.keepTemp === true,
         openaiApiKey: opts.apiKey,
         outputFormats,
@@ -249,6 +318,51 @@ Examples:
       process.exit(ExitCode.MISSING_DEPENDENCY);
     }
 
+    let enhancerLabel: string | undefined;
+    if (config.enhancer !== "none") {
+      registerBuiltinEnhancers();
+      const enhancer = getEnhancer(config.enhancer);
+      if (!enhancer) {
+        const available = listEnhancers().join(", ");
+        const msg = `Unknown enhancer '${config.enhancer}'. Available enhancers: ${available}`;
+        if (jsonMode) {
+          console.log(JSON.stringify({ error: "config_error", message: msg }));
+        } else {
+          console.error(pc.red(msg));
+        }
+        process.exit(ExitCode.CONFIG_ERROR);
+      }
+      if (enhancer.requiresUpload && !config.allowUpload) {
+        const msg =
+          `Enhancer '${enhancer.displayName}' uploads audio to a remote service. ` +
+          "Pass --allow-upload (or set MEDIA_TRANSCRIBER_ALLOW_UPLOAD=1) to consent.";
+        if (jsonMode) {
+          console.log(JSON.stringify({ error: "config_error", message: msg }));
+        } else {
+          console.error(pc.red(msg));
+        }
+        process.exit(ExitCode.CONFIG_ERROR);
+      }
+      enhancer.init(config);
+      const enhancerStatus = await enhancer.checkAvailability();
+      if (!enhancerStatus.available) {
+        if (jsonMode) {
+          console.log(JSON.stringify({ error: "missing_dependency", enhancer: enhancerStatus }));
+        } else {
+          console.error(pc.red(`\nEnhancer '${enhancer.displayName}' is not available: ${enhancerStatus.error}`));
+          if (enhancerStatus.installHint) {
+            console.error(pc.yellow(`  ${enhancerStatus.installHint}`));
+          }
+          console.error(pc.gray(`\nRun 'media-transcriber setup ${enhancer.name}' for guided setup, or 'media-transcriber doctor --enhancer ${enhancer.name}' for detailed diagnostics.\n`));
+        }
+        process.exit(ExitCode.MISSING_DEPENDENCY);
+      }
+      if (!jsonMode && enhancer.requiresUpload) {
+        console.error(pc.yellow(`\nNote: enhancement will upload audio to ${enhancer.displayName}.`));
+      }
+      enhancerLabel = `${enhancer.displayName} (${config.enhanceProfile})`;
+    }
+
     // --- Single file mode ---
     if (isSingleFile) {
       if (!jsonMode) {
@@ -259,8 +373,8 @@ Examples:
         console.error(pc.gray(`  Input:     ${input}`));
         console.error(pc.gray(`  Output:    ${outputFolder}`));
         console.error(pc.gray(`  Formats:   ${outputFormats.join(", ")}`));
-        if (config.enableAudioEnhancement) {
-          console.error(pc.gray(`  Enhance:   yes`));
+        if (enhancerLabel) {
+          console.error(pc.gray(`  Enhance:   ${enhancerLabel}`));
         }
       }
 
@@ -309,8 +423,8 @@ Examples:
       console.error(pc.gray(`  Input:     ${config.inputFolder}`));
       console.error(pc.gray(`  Output:    ${config.outputFolder}`));
       console.error(pc.gray(`  Formats:   ${outputFormats.join(", ")}`));
-      if (config.enableAudioEnhancement) {
-        console.error(pc.gray(`  Enhance:   yes`));
+      if (enhancerLabel) {
+        console.error(pc.gray(`  Enhance:   ${enhancerLabel}`));
       }
       console.error(pc.gray(`  Split at:  ${config.maxDurationSeconds}s`));
       console.error("");

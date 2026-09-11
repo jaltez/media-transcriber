@@ -11,13 +11,53 @@ import { WHISPER_COMMAND_ENV } from "../../deps/whisper.js";
 import type { DependencyStatus } from "../../types/index.js";
 import { ExitCode } from "../../types/index.js";
 import { arch, platform, version as nodeVersion } from "node:process";
+import {
+  getEnhancer,
+  listEnhancers,
+  registerBuiltinEnhancers,
+} from "../../enhancers/registry.js";
 
 interface DoctorOptions {
   backend?: string;
+  enhancer?: string;
   apiKey?: string;
   whisperCommand?: string;
   all?: boolean;
   json?: boolean;
+}
+
+interface DoctorReport {
+  system: {
+    node: string;
+    platform: string;
+    arch: string;
+  };
+  selectedBackend: string;
+  checkedAllBackends: boolean;
+  dependencies: {
+    ffmpeg: DependencyStatus;
+    ffprobe: DependencyStatus;
+  };
+  backends: BackendReadiness[];
+  selectedEnhancer?: string;
+  enhancers: EnhancerReadiness[];
+  ready: boolean;
+  errors: string[];
+  nextSteps: string[];
+}
+
+interface EnhancerReadiness {
+  name: string;
+  displayName: string;
+  selected: boolean;
+  available: boolean;
+  version?: string;
+  error?: string;
+  installHint?: string;
+  source?: string;
+  command?: string;
+  requiresUpload: boolean;
+  experimental: boolean;
 }
 
 interface BackendReadiness {
@@ -34,27 +74,10 @@ interface BackendReadiness {
   supportedModels: string[];
 }
 
-interface DoctorReport {
-  system: {
-    node: string;
-    platform: string;
-    arch: string;
-  };
-  selectedBackend: string;
-  checkedAllBackends: boolean;
-  dependencies: {
-    ffmpeg: DependencyStatus;
-    ffprobe: DependencyStatus;
-  };
-  backends: BackendReadiness[];
-  ready: boolean;
-  errors: string[];
-  nextSteps: string[];
-}
-
 export const doctorCommand = new Command("doctor")
-  .description("Check readiness for the default or selected transcription backend")
+  .description("Check readiness for transcription backends and audio enhancers")
   .option("-b, --backend <name>", "Backend readiness path to check")
+  .option("--enhancer <name>", "Enhancer readiness path to check (basic, deepfilternet, unise)")
   .option("--api-key <key>", "API key for API backend readiness (env: OPENAI_API_KEY)")
   .option("--whisper-command <command>", `Local Whisper command override (env: ${WHISPER_COMMAND_ENV})`)
   .option("--all", "Show all backend availability without making optional backends fatal")
@@ -119,6 +142,56 @@ export const doctorCommand = new Command("doctor")
         ]
       : [];
 
+    // Enhancers: always show the inventory; fatal only when one is selected
+    registerBuiltinEnhancers();
+    let selectedEnhancerName: string | undefined;
+    if (opts.enhancer) {
+      selectedEnhancerName = opts.enhancer.trim().toLowerCase();
+      if (!getEnhancer(selectedEnhancerName)) {
+        const message = `Unknown enhancer '${selectedEnhancerName}'. Available enhancers: ${listEnhancers().join(", ")}`;
+        if (opts.json) {
+          console.log(JSON.stringify({ error: "config_error", message }, null, 2));
+        } else {
+          console.error(pc.red(message));
+        }
+        process.exit(ExitCode.CONFIG_ERROR);
+      }
+    }
+
+    const enhancers: EnhancerReadiness[] = [];
+    for (const name of listEnhancers()) {
+      const enhancer = getEnhancer(name)!;
+      const enhancerSelected = enhancer.name === selectedEnhancerName;
+      // Remote enhancers are only probed when explicitly selected (or --all):
+      // a plain local diagnostics command must not phone home, and an
+      // offline machine should not see "unreachable" noise.
+      const probe = !enhancer.requiresUpload || enhancerSelected || opts.all === true;
+      const status = probe ? await enhancer.checkAvailability() : null;
+      enhancer.init(configSchema.parse({}));
+      enhancers.push({
+        name: enhancer.name,
+        displayName: enhancer.displayName,
+        selected: enhancerSelected,
+        available: status?.available ?? false,
+        version: status?.version,
+        error: status?.error ?? (probe ? undefined : "remote; unchecked (pass --enhancer unise to probe)"),
+        installHint: status?.installHint,
+        source: status?.source,
+        command: status?.command,
+        requiresUpload: enhancer.requiresUpload,
+        experimental: enhancer.experimental === true,
+      });
+    }
+
+    const selectedEnhancerStatus = selectedEnhancerName
+      ? enhancers.find((e) => e.name === selectedEnhancerName)!
+      : undefined;
+    const enhancerFailed = selectedEnhancerStatus !== undefined && !selectedEnhancerStatus.available;
+    if (enhancerFailed) {
+      errors.push(`Enhancer ${selectedEnhancerStatus.displayName} is not available`);
+      nextSteps.push(`Run 'media-transcriber setup ${selectedEnhancerStatus.name}' for guided enhancer setup.`);
+    }
+
     const report: DoctorReport = {
       system: {
         node: nodeVersion,
@@ -129,6 +202,8 @@ export const doctorCommand = new Command("doctor")
       checkedAllBackends: opts.all === true,
       dependencies: ffmpegStatus,
       backends,
+      selectedEnhancer: selectedEnhancerName,
+      enhancers,
       ready: errors.length === 0,
       errors,
       nextSteps,
@@ -173,10 +248,40 @@ export const doctorCommand = new Command("doctor")
     }
     console.log("");
 
+    console.log(pc.cyan("Enhancers (audio enhancement, optional)"));
+    for (const enhancer of enhancers) {
+      const marker = enhancer.selected ? pc.bold("*") : " ";
+      const label = enhancer.experimental
+        ? `${enhancer.displayName} ${pc.yellow("[experimental]")}`
+        : enhancer.displayName;
+      if (enhancer.available) {
+        const details = [enhancer.version, enhancer.source && `source: ${enhancer.source}`]
+          .filter(Boolean)
+          .join("; ");
+        console.log(` ${marker} ${pc.green("✓")} ${label}  ${pc.gray(details || "Available")}`);
+        if (enhancer.command) {
+          console.log(pc.gray(`      command: ${enhancer.command}`));
+        }
+      } else {
+        const color = enhancer.selected ? pc.red : pc.yellow;
+        console.log(` ${marker} ${color("✗")} ${label}  ${color(enhancer.error ?? "Not available")}`);
+        if (enhancer.installHint) {
+          console.log(pc.gray(`      ${enhancer.installHint}`));
+        }
+      }
+      if (enhancer.requiresUpload) {
+        console.log(pc.gray("      uploads audio to a remote service (--allow-upload required)"));
+      }
+    }
+    console.log("");
+
     if (report.ready) {
       console.log(pc.green(`Ready to transcribe with '${selectedBackend}'.\n`));
     } else {
-      console.log(pc.red(`Not ready for '${selectedBackend}'.`));
+      const target = enhancerFailed && selectedEnhancerStatus
+        ? `enhancer '${selectedEnhancerStatus.displayName}'`
+        : `'${selectedBackend}'`;
+      console.log(pc.red(`Not ready for ${target}.`));
       for (const error of errors) {
         console.log(pc.red(`  - ${error}`));
       }
@@ -186,8 +291,6 @@ export const doctorCommand = new Command("doctor")
       }
       console.log("");
     }
-
-    process.exit(report.ready ? ExitCode.SUCCESS : ExitCode.MISSING_DEPENDENCY);
   });
 
 function printDependency(

@@ -11,7 +11,9 @@ import type {
 import { SUPPORTED_EXTENSIONS } from "../types/index.js";
 import { convertToMp3 } from "./audio-converter.js";
 import { getAudioDuration, splitAudio } from "./audio-splitter.js";
-import { enhanceAudio } from "./audio-enhancer.js";
+import { getEnhancer, registerBuiltinEnhancers } from "../enhancers/registry.js";
+import { mergeEnhancementReports, runEnhancement } from "../enhancers/chain.js";
+import type { EnhancementReport } from "../types/index.js";
 import { mergeTranscripts } from "./transcript-merger.js";
 
 export type ProgressCallback = (event: ProgressEvent) => void;
@@ -90,6 +92,7 @@ async function processFile(
   onProgress({ event: "file_start", file: filePath, fileNumber: fileNum, totalFiles });
 
   let durationSeconds = 0;
+  let enhancementReport: EnhancementReport | undefined;
 
   try {
     // Step 1: Convert to MP3 if needed
@@ -165,18 +168,57 @@ async function processFile(
       audioFiles = [mp3File];
     }
 
-    // Step 3: Enhance audio if requested
-    if (config.enableAudioEnhancement) {
+    if (config.enhancer !== "none") {
+      registerBuiltinEnhancers();
+      const enhancer = getEnhancer(config.enhancer);
+      if (!enhancer) {
+        throw new Error(`Unknown enhancer '${config.enhancer}'`);
+      }
+      enhancer.init(config);
+
       onProgress({
         event: "step_start",
         file: filePath,
         step: "enhance",
-        message: `Enhancing ${audioFiles.length} file(s)`,
+        message: `Enhancing ${audioFiles.length} file(s) with ${enhancer.displayName}`,
       });
       const enhanced: string[] = [];
-      for (const audioFile of audioFiles) {
-        const result = await enhanceAudio(audioFile, tempFolder);
-        enhanced.push(result);
+      const reports: EnhancementReport[] = [];
+      for (let i = 0; i < audioFiles.length; i++) {
+        const partBase = audioFiles.length > 1
+          ? `${baseName}_part${String(i + 1).padStart(2, "0")}`
+          : `${baseName}`;
+        const result = await runEnhancement({
+          inputFile: audioFiles[i]!,
+          outputFolder: tempFolder,
+          baseName: `${partBase}_enh`,
+          enhancer,
+          options: {
+            profile: config.enhanceProfile,
+            declick: config.enhanceOptions.declick,
+            humNotch: config.enhanceOptions.humNotch,
+            howlNotch: config.enhanceOptions.howlNotch,
+            loudnessTargetLufs: config.enhanceOptions.loudnessTargetLufs,
+            attenLimDb: config.enhanceOptions.dfnAttenLimDb,
+            allowUpload: config.allowUpload,
+          },
+          outputExt: ".mp3",
+          onProgress: (percent, message) => {
+            onProgress({
+              event: "step_progress",
+              file: filePath,
+              step: "enhance",
+              current: i + 1,
+              total: audioFiles.length,
+              message: message ?? `${percent}%`,
+            });
+          },
+        });
+        enhanced.push(result.outputFile);
+        reports.push(result.report);
+        // Merge incrementally so a failure on a later part still surfaces the
+        // reports of the parts that were enhanced.
+        enhancementReport = mergeEnhancementReports(reports, result.outputFile);
       }
       audioFiles = enhanced;
       onProgress({
@@ -287,6 +329,7 @@ async function processFile(
       backend: backend.name,
       model: config.whisperModel,
       success: true,
+      ...(enhancementReport ? { enhancement: enhancementReport } : {}),
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -300,6 +343,7 @@ async function processFile(
       model: config.whisperModel,
       success: false,
       error: message,
+      ...(enhancementReport ? { enhancement: enhancementReport } : {}),
     };
   }
 }
