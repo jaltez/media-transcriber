@@ -1,6 +1,6 @@
 # media-transcriber
 
-Transcribe audio and video files to text and subtitles using pluggable AI backends, including local Whisper and the OpenAI Whisper API.
+Transcribe audio and video files to text and subtitles using pluggable AI backends, including local Whisper, NVIDIA Parakeet TDT, and the OpenAI Whisper API.
 
 ## Quick Start
 
@@ -10,6 +10,9 @@ npx media-transcriber doctor
 
 # Or install globally
 npm install -g media-transcriber
+
+# Update to the latest published version
+media-transcriber update
 
 # Check readiness for the default local backend
 media-transcriber doctor
@@ -34,6 +37,7 @@ media-transcriber transcribe ./data/input ./data/output
 
 Backend requirements:
 - `whisper-local`: A usable local Whisper installation. This can come from PATH, [uv](https://docs.astral.sh/uv/) tool installs, `pipx`, `pip`, or an active Python environment. Use `media-transcriber setup whisper-local` for guided setup.
+- `parakeet`: NVIDIA NeMo with PyTorch. Found automatically when `nemo_toolkit` is installed in the active Python; otherwise a uv-managed environment is used (`uv run --with "nemo-toolkit[asr]"`, built automatically on first use). Use `media-transcriber setup parakeet` for guided setup. Model weights (~1.2 GB) download automatically on the first transcription. GPU (CUDA) recommended; falls back to CPU.
 - `whisper-api`: OpenAI API key (`OPENAI_API_KEY` env var or `--api-key`)
 
 `uv add openai-whisper` is only appropriate inside a Python project. For general CLI setup, prefer a tool-style install such as `uv tool install openai-whisper`, `pipx install openai-whisper`, or `python -m pip install -U openai-whisper`.
@@ -55,6 +59,10 @@ media-transcriber transcribe ./recordings ./transcripts
 # Preset, model, and device
 media-transcriber transcribe ./data/input ./data/output --preset accurate
 media-transcriber transcribe ./data/input ./data/output -m medium -d cpu
+
+# NVIDIA Parakeet TDT 0.6B v3 (local, GPU recommended)
+media-transcriber transcribe ./data/input ./data/output -b parakeet
+media-transcriber transcribe ./data/input ./data/output -b parakeet -d cuda
 
 # Custom local Whisper command
 media-transcriber transcribe ./meeting.mp4 --whisper-command "whisper"
@@ -101,6 +109,7 @@ Run guided setup when readiness fails:
 
 ```bash
 media-transcriber setup whisper-local
+media-transcriber setup parakeet
 media-transcriber setup whisper-api
 media-transcriber setup deepfilternet
 ```
@@ -108,6 +117,20 @@ media-transcriber setup deepfilternet
 Setup can offer to run package managers after confirmation, validates the result, and can run an optional smoke test. It does not write Media Transcriber config files or store API keys.
 
 For `deepfilternet`, setup installs the `deepfilternet` Python tool (uv/pipx/pip) with `torchaudio` pinned below 2.9 — deepfilternet 0.5.6 is incompatible with newer torchaudio releases. The DeepFilterNet 3 model weights download automatically on first use.
+
+For `parakeet`, setup verifies a usable NVIDIA NeMo runtime (active Python or a uv-managed environment) and offers install paths: a uv-managed environment (nothing installed globally; the environment with NeMo + PyTorch is built automatically on first use) or `pip install "nemo-toolkit[asr]"` into the active Python.
+
+## Update
+
+`media-transcriber update` compares the installed version against the npm registry and updates in place:
+
+```bash
+media-transcriber update            # Check and install the latest version (asks first)
+media-transcriber update --check    # Only report whether a new version exists
+media-transcriber update --yes      # Skip the confirmation prompt
+```
+
+Behavior depends on how media-transcriber is running: a global npm install is updated via `npm install -g media-transcriber@latest`; an npx run prints guidance (npx caches don't self-update — use `npx media-transcriber@latest`); a git checkout prints the `git pull` workflow.
 
 ## Execution Options
 
@@ -117,9 +140,9 @@ All parameters are passed at execution time (stateless CLI).
 | ---- | ---- | ---- | ---- |
 | `input` | string | required | Input file or folder |
 | `output` | string | optional for files, required for folders | Output folder |
-| `backend` | string | `whisper-local` | Transcription backend |
-| `whisperModel` | string | backend default | Model name |
-| `preset` | `fast`, `balanced`, or `accurate` | unset | Friendly quality preset |
+| `backend` | string | `whisper-local` | Transcription backend: `whisper-local`, `parakeet`, `whisper-api` |
+| `whisperModel` | string | backend default | Model name (e.g. `large-v3` for whisper-local, `parakeet-tdt-0.6b-v3` for parakeet, `whisper-1` for whisper-api) |
+| `preset` | `fast`, `balanced`, or `accurate` | unset | Friendly quality preset (whisper-local maps to `base`, `small`, `large-v2`) |
 | `device` | `auto`, `cuda`, or `cpu` | `auto` | Processing device policy |
 | `enhancer` | `none`, `basic`, `deepfilternet`, or `unise` | `none` | Audio enhancement engine |
 | `enhanceProfile` | `asr` or `master` | `asr` | Enhancement post-processing profile |
@@ -146,10 +169,10 @@ All parameters are passed at execution time (stateless CLI).
 
 Options:
 
-- `-m, --model <name>`: Backend model name
+- `-m, --model <name>`: Backend model name (depends on `--backend`; run `doctor` to list them)
 - `--preset <name>`: Quality preset: `fast`, `balanced`, or `accurate`
 - `-d, --device <type>`: Processing device: `auto`, `cuda`, or `cpu`
-- `-b, --backend <name>`: Transcription backend
+- `-b, --backend <name>`: Transcription backend: `whisper-local`, `parakeet`, or `whisper-api`
 - `--enhance [engine]`: Enhance audio before transcription; engine: `basic` (default), `deepfilternet`, `unise`
 - `--enhance-profile <profile>`: Enhancement post-processing: `asr` (default) or `master`
 - `--declick`: Add declicking to the enhancement chain
@@ -187,9 +210,17 @@ Standalone enhancement: produce cleaned audio without transcribing, e.g. to audi
 
 - Guides FFmpeg/ffprobe installation when missing
 - Guides local Whisper setup through uv tool, pipx, pip, or existing installs
+- `setup parakeet` verifies or installs the NVIDIA NeMo runtime (active Python or uv-managed environment)
 - `setup deepfilternet` guides the optional enhancer install (with the torchaudio<2.9 pin) and offers a smoke test
 - Validates API credentials without storing secrets
 - Offers an optional smoke test after readiness succeeds
+
+### `update`
+
+- Compares the installed version with the npm registry and updates in place
+- Global npm installs: runs `npm install -g media-transcriber@latest` after confirmation (`--yes` to skip)
+- npx runs: prints guidance (use `npx media-transcriber@latest`); git checkouts: prints the `git pull` workflow
+- `--check`: only report whether a new version is available
 
 ## Audio Enhancement
 

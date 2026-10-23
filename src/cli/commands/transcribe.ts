@@ -101,18 +101,18 @@ export const transcribeCommand = new Command("transcribe")
   .description("Transcribe audio/video files to text and subtitles")
   .argument("<input>", "Audio/video file or folder to transcribe")
   .argument("[output]", "Output folder (default: next to input file, required for folders)")
-  .option("-m, --model <name>", "Backend model name")
-  .option("--preset <name>", "Quality preset: fast, balanced, accurate", parsePreset)
-  .option("-d, --device <type>", "Processing device: auto, cuda, or cpu")
-  .option("-b, --backend <name>", "Transcription backend", "whisper-local")
-  .option("--split-threshold <seconds>", "Split files longer than this duration", parseSeconds)
+  .option("-m, --model <name>", "Backend model name (depends on --backend; see Backends below)")
+  .option("--preset <name>", "Quality preset: fast, balanced, accurate (maps to base, small, large-v2 on whisper-local)", parsePreset)
+  .option("-d, --device <type>", "Processing device: auto, cuda, or cpu (default: auto)")
+  .option("-b, --backend <name>", "Transcription backend: whisper-local, parakeet, whisper-api", "whisper-local")
+  .option("--split-threshold <seconds>", "Split files longer than this many seconds (default: 1200)", parseSeconds)
   .option("--enhance [engine]", "Enhance audio before transcription: basic, deepfilternet, unise (default engine: basic)")
   .addOption(new Option("--enhance-audio", "Deprecated alias for --enhance basic").hideHelp())
   .option("--enhance-profile <profile>", "Enhancement post-processing: asr (transcription) or master (listening)", parseEnhanceProfile)
   .option("--declick", "Add declicking to the enhancement chain")
   .option("--no-hum-notch", "Skip mains-hum analysis and notch filtering during enhancement")
   .option("--howl-notch", "Also notch sustained feedback howls detected during enhancement")
-  .option("--dfn-atten <dB>", "DeepFilterNet attenuation limit in dB (protects speech in mixed content)", parseAttenDb)
+  .option("--dfn-atten <dB>", "DeepFilterNet attenuation limit in dB, 0-40 (protects speech in mixed content)", parseAttenDb)
   .option("--allow-upload", "Consent to upload audio for remote enhancement engines (env: MEDIA_TRANSCRIBER_ALLOW_UPLOAD)")
   .option("--keep-temp", "Keep intermediate files in output/temp folder")
   .option("--api-key <key>", "API key for the backend (env: OPENAI_API_KEY)", process.env["OPENAI_API_KEY"])
@@ -123,16 +123,30 @@ export const transcribeCommand = new Command("transcribe")
 Supported input formats:
   ${SUPPORTED_FORMATS_DISPLAY}
 
+Backends (-b, --backend):
+  whisper-local  OpenAI Whisper CLI running locally (default model: large-v2)
+                 models: tiny, base, small, medium, large, large-v2, large-v3, turbo
+  parakeet       NVIDIA Parakeet TDT via NVIDIA NeMo, GPU recommended
+                 default model: parakeet-tdt-0.6b-v3; also parakeet-tdt-0.6b-v2
+  whisper-api    OpenAI Whisper API, needs OPENAI_API_KEY (model: whisper-1, 25 MB limit)
+
 Audio enhancement engines (--enhance):
   basic          FFmpeg denoise + analysis-driven hum notches (no extra dependencies)
   deepfilternet  DeepFilterNet 3 neural denoiser (optional install; see 'setup deepfilternet')
   unise          UniSE remote restoration (experimental; uploads audio, needs --allow-upload)
+
+Environment variables:
+  OPENAI_API_KEY                     API key for the whisper-api backend
+  MEDIA_TRANSCRIBER_WHISPER_COMMAND  Override the local Whisper command
+  MEDIA_TRANSCRIBER_DFN_COMMAND      Override the DeepFilterNet command
+  MEDIA_TRANSCRIBER_ALLOW_UPLOAD=1   Consent to remote enhancement uploads
 
 Examples:
   $ media-transcriber transcribe recording.mp4              Transcribe a single file
   $ media-transcriber transcribe meeting.mp4 ./out          Single file to specific folder
   $ media-transcriber transcribe ./recordings ./output      Batch transcribe a folder
   $ media-transcriber transcribe ./in ./out --enhance       Enhance degraded audio first
+  $ media-transcriber transcribe ./in ./out -b parakeet -d cuda    GPU transcription with NVIDIA Parakeet
   $ media-transcriber transcribe ./in ./out -b whisper-api  Use OpenAI Whisper API
   $ media-transcriber transcribe ./in ./out --preset accurate  Use a higher-quality local model
   $ media-transcriber transcribe ./in ./out --model small      Use a specific backend model
@@ -140,6 +154,7 @@ Examples:
   $ media-transcriber enhance noisy.wav                     Enhance audio without transcribing
   $ media-transcriber doctor                                Check readiness
   $ media-transcriber setup whisper-local                   Guided local setup
+  $ media-transcriber update                                Update media-transcriber
 `)
   .action(async (input: string, output: string | undefined, opts: TranscribeOptions) => {
     const jsonMode = opts.json === true;

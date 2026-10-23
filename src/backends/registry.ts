@@ -1,6 +1,7 @@
 import type { TranscriptionBackend } from "./types.js";
 import { WhisperLocalBackend } from "./whisper-local.js";
 import { WhisperApiBackend } from "./whisper-api.js";
+import { ParakeetBackend } from "./parakeet.js";
 
 const backends = new Map<string, TranscriptionBackend>();
 
@@ -22,5 +23,6 @@ export function listBackends(): string[] {
 /** Initialize all built-in backends */
 export function registerBuiltinBackends(): void {
   registerBackend(new WhisperLocalBackend());
+  registerBackend(new ParakeetBackend());
   registerBackend(new WhisperApiBackend());
 }

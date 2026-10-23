@@ -19,6 +19,7 @@ import {
   findPythonCommand,
 } from "../../deps/whisper.js";
 import { discoverDeepFilterNet } from "../../deps/deepfilternet.js";
+import { discoverParakeet } from "../../deps/parakeet.js";
 import {
   getEnhancer,
   listEnhancers,
@@ -41,7 +42,7 @@ interface InstallOption {
 
 export const setupCommand = new Command("setup")
   .description("Guided setup for dependencies and backend readiness")
-  .argument("[backend]", "Backend to set up", defaultConfig.backend)
+  .argument("[backend]", "Backend or enhancer to set up: whisper-local, parakeet, whisper-api, deepfilternet, unise", defaultConfig.backend)
   .action(async (name: string) => {
     registerBuiltinBackends();
     registerBuiltinEnhancers();
@@ -66,6 +67,8 @@ export const setupCommand = new Command("setup")
 
     if (backend.name === "whisper-local") {
       await setupLocalWhisper();
+    } else if (backend.name === "parakeet") {
+      await setupParakeet();
     } else if (backend.name === "whisper-api") {
       await setupApiBackend(backend);
     } else {
@@ -215,6 +218,68 @@ async function setupLocalWhisper(): Promise<void> {
   }
 }
 
+async function setupParakeet(): Promise<void> {
+  const status = await discoverParakeet();
+  if (status.available) {
+    console.log(`${pc.green("✓")} NVIDIA NeMo is available${status.version ? pc.gray(` (${status.version})`) : ""}${status.command ? pc.gray(` via ${status.command}`) : ""}`);
+    console.log(pc.gray("Model weights (~1.2 GB) download automatically on the first transcription."));
+    return;
+  }
+
+  console.log(pc.yellow("No usable NVIDIA NeMo installation was found."));
+  const options = await availableInstallOptions(await parakeetInstallOptions());
+  const selected = await chooseInstallOption(
+    "Choose a Parakeet runtime path",
+    options,
+    parakeetManualCommands(),
+  );
+  if (selected) {
+    await runInstall(selected);
+    console.log(pc.gray("Model weights (~1.2 GB) download automatically on the first transcription."));
+  }
+}
+
+async function parakeetInstallOptions(): Promise<InstallOption[]> {
+  const options: InstallOption[] = [
+    {
+      id: "uv-env",
+      label: "Use a uv-managed NeMo environment (recommended; no global install)",
+      command: "uv",
+      args: [
+        "run", "--no-project",
+        "--with", "nemo-toolkit[asr]",
+        "python", "-c", "import nemo.collections.asr",
+      ],
+      display: 'uv run --no-project --with "nemo-toolkit[asr]" python -c "import nemo.collections.asr"',
+      availabilityCommand: "uv",
+    },
+  ];
+
+  const python = await findPythonCommand();
+  if (python) {
+    options.push({
+      id: "pip",
+      label: "Install NVIDIA NeMo in the active Python (large download)",
+      command: python.command,
+      args: [...python.args, "-m", "pip", "install", "-U", "nemo-toolkit[asr]"],
+      display: `${python.display} -m pip install -U "nemo-toolkit[asr]"`,
+      availabilityCommand: python.command,
+      availabilityArgs: [...python.args, "--version"],
+    });
+  }
+
+  return options;
+}
+
+function parakeetManualCommands(): string[] {
+  return [
+    'uv run --no-project --with "nemo-toolkit[asr]" python -c "import nemo.collections.asr"',
+    'python -m pip install -U "nemo-toolkit[asr]"',
+    "# Requires ffmpeg on PATH (already checked above) and ~1.2 GB of model",
+    "# weights per model, downloaded automatically on first use.",
+  ];
+}
+
 async function setupApiBackend(backend: TranscriptionBackend): Promise<void> {
   const config = configSchema.parse({
     backend: backend.name,
@@ -267,7 +332,9 @@ async function maybeRunSmokeTest(backend: TranscriptionBackend): Promise<void> {
   const run = await confirm({
     message: backend.name === "whisper-api"
       ? "Run an optional smoke test? This makes a tiny API transcription request."
-      : "Run an optional smoke test? This may download the selected Whisper model.",
+      : backend.name === "parakeet"
+        ? "Run an optional smoke test? First use downloads the NeMo environment and Parakeet model weights (~1.2 GB)."
+        : "Run an optional smoke test? This may download the selected Whisper model.",
     default: false,
   });
 

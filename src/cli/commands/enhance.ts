@@ -64,17 +64,21 @@ export const enhanceCommand = new Command("enhance")
   .argument("<input>", "Audio/video file or folder to enhance")
   .argument("[output]", "Output folder (default: next to input file, required for folders)")
   .option("--enhancer <name>", "Enhancement engine: basic, deepfilternet, unise", "basic")
-  .option("--enhance-profile <profile>", "Post-processing: asr (light) or master (listening grade)", parseProfile, "master")
+  .option("--enhance-profile <profile>", "Post-processing: asr (light, for transcription input) or master (listening grade)", parseProfile, "master")
   .option("--declick", "Add declicking to the enhancement chain")
   .option("--no-hum-notch", "Skip mains-hum analysis and notch filtering")
   .option("--howl-notch", "Also notch sustained feedback howls")
-  .option("--dfn-atten <dB>", "DeepFilterNet attenuation limit in dB", parseAttenDb)
+  .option("--dfn-atten <dB>", "DeepFilterNet attenuation limit in dB, 0-40 (protects speech in mixed content)", parseAttenDb)
   .option("--allow-upload", "Consent to upload audio for remote enhancement engines (env: MEDIA_TRANSCRIBER_ALLOW_UPLOAD)")
   .option("--report", "Write <name>_enhancement.json next to each output")
   .option("--json", "Machine-readable JSON output for scripts and AI agents")
   .addHelpText("after", `
 Supported input formats:
   ${SUPPORTED_FORMATS_DISPLAY}
+
+Environment variables:
+  MEDIA_TRANSCRIBER_ALLOW_UPLOAD=1   Consent to remote enhancement uploads
+  MEDIA_TRANSCRIBER_DFN_COMMAND      Override the DeepFilterNet command
 
 Examples:
   $ media-transcriber enhance interview.wav                    Enhanced WAV next to the input

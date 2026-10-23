@@ -39,10 +39,33 @@ export function formatSrtTimestamp(ms: number): string {
   );
 }
 
+/** A timestamped transcript segment with second-based times */
+export interface TimedTextSegment {
+  start: number; // seconds
+  end: number; // seconds
+  text: string;
+}
+
+/**
+ * Render timestamped segments (e.g. from a backend that returns structured
+ * output) as an SRT document.
+ */
+export function buildSrtFromSegments(segments: TimedTextSegment[]): string {
+  const srtLines: string[] = [];
+  for (const [i, segment] of segments.entries()) {
+    const startMs = Math.round(segment.start * 1000);
+    const endMs = Math.max(Math.round(segment.end * 1000), startMs);
+    srtLines.push(String(i + 1));
+    srtLines.push(`${formatSrtTimestamp(startMs)} --> ${formatSrtTimestamp(endMs)}`);
+    srtLines.push(segment.text.trim());
+    srtLines.push("");
+  }
+  return srtLines.join("\n");
+}
+
 /**
  * Parse an SRT file into structured entries.
- */
-export function parseSrt(content: string): SrtEntry[] {
+ */export function parseSrt(content: string): SrtEntry[] {
   const entries: SrtEntry[] = [];
   const lines = content.split(/\r?\n/);
   let i = 0;

@@ -76,12 +76,12 @@ interface BackendReadiness {
 
 export const doctorCommand = new Command("doctor")
   .description("Check readiness for transcription backends and audio enhancers")
-  .option("-b, --backend <name>", "Backend readiness path to check")
+  .option("-b, --backend <name>", "Backend readiness path to check: whisper-local, parakeet, whisper-api")
   .option("--enhancer <name>", "Enhancer readiness path to check (basic, deepfilternet, unise)")
   .option("--api-key <key>", "API key for API backend readiness (env: OPENAI_API_KEY)")
   .option("--whisper-command <command>", `Local Whisper command override (env: ${WHISPER_COMMAND_ENV})`)
   .option("--all", "Show all backend availability without making optional backends fatal")
-  .option("--json", "Emit machine-readable readiness output")
+  .option("--json", "Machine-readable JSON output for scripts and AI agents")
   .action(async (opts: DoctorOptions) => {
     registerBuiltinBackends();
 
