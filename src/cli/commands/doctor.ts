@@ -307,6 +307,8 @@ export const doctorCommand = new Command("doctor")
       }
       console.log("");
     }
+
+    process.exit(report.ready ? ExitCode.SUCCESS : ExitCode.MISSING_DEPENDENCY);
   });
 
 function printDependency(

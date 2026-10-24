@@ -268,6 +268,7 @@ Examples:
         enhancer: enhancerName,
         enhanceProfile: opts.enhanceProfile,
         enhanceOptions: {
+          declick: opts.declick === true,
           humNotch: opts.humNotch !== false,
           howlNotch: opts.howlNotch === true,
           dfnAttenLimDb: opts.dfnAtten,
