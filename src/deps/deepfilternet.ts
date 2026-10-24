@@ -2,6 +2,7 @@ import { execa } from "execa";
 import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { checkCommand } from "./checker.js";
+import { PROBE_CACHE_KEYS, withProbeCache } from "./cache.js";
 import { parseCommandLine, findPythonCommand } from "./whisper.js";
 
 export const DFN_COMMAND_ENV = "MEDIA_TRANSCRIBER_DFN_COMMAND";
@@ -198,6 +199,7 @@ async function findPythonDfn(): Promise<DfnCommandSpec | null> {
 export async function discoverDeepFilterNet(
   overrideCommand = process.env[DFN_COMMAND_ENV],
 ): Promise<DeepFilterNetStatus> {
+  // Overrides are env-specific and explicit: always probe fresh, never cache.
   if (overrideCommand?.trim()) {
     const parsed = parseCommandLine(overrideCommand);
     const variant = /deep-filter(?!net)/.test(parsed.command) ? "rust" : "python";
@@ -207,6 +209,14 @@ export async function discoverDeepFilterNet(
     );
   }
 
+  return withProbeCache(
+    PROBE_CACHE_KEYS.deepfilternet,
+    (status) => status.available === true,
+    () => discoverDeepFilterNetFromPath(),
+  );
+}
+
+async function discoverDeepFilterNetFromPath(): Promise<DeepFilterNetStatus> {
   const pathSpec: DfnCommandSpec = {
     command: "deepFilter",
     args: [],

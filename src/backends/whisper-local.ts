@@ -10,6 +10,7 @@ import {
   resolveLocalDevice,
   type CommandSpec,
 } from "../deps/whisper.js";
+import { invalidateProbeCache, PROBE_CACHE_KEYS } from "../deps/cache.js";
 
 /**
  * Local OpenAI Whisper CLI backend.
@@ -75,12 +76,11 @@ export class WhisperLocalBackend implements TranscriptionBackend {
       env["CUDA_VISIBLE_DEVICES"] = "0";
     }
 
-    let result;
-    try {
-      result = await execa(
-        commandSpec.command,
+    const launch = (spec: CommandSpec) =>
+      execa(
+        spec.command,
         [
-          ...commandSpec.args,
+          ...spec.args,
           inputFile,
           "--model", model,
           "--device", resolvedDevice,
@@ -90,8 +90,26 @@ export class WhisperLocalBackend implements TranscriptionBackend {
         ],
         { env, reject: false },
       );
+
+    let result;
+    try {
+      result = await launch(commandSpec);
     } catch (err) {
-      throw new Error(`Failed to launch whisper: ${err instanceof Error ? err.message : err}`);
+      // A cached discovery may be stale (the binary moved or was removed
+      // after the probe); rediscover once and retry before failing.
+      await invalidateProbeCache(PROBE_CACHE_KEYS.whisper);
+      const rediscovered = await discoverLocalWhisper(this.config?.localWhisperCommand);
+      if (!rediscovered.available || !rediscovered.commandSpec) {
+        throw new Error(
+          `Whisper is no longer reachable via '${commandSpec.display}'. ${rediscovered.error ?? ""}`.trim(),
+        );
+      }
+      this.commandSpec = rediscovered.commandSpec;
+      try {
+        result = await launch(rediscovered.commandSpec);
+      } catch (retryErr) {
+        throw new Error(`Failed to launch whisper: ${retryErr instanceof Error ? retryErr.message : retryErr}`);
+      }
     }
 
     if (result.exitCode !== 0) {

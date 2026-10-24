@@ -9,6 +9,7 @@ import {
   discoverDeepFilterNet,
   type DfnCommandSpec,
 } from "../deps/deepfilternet.js";
+import { invalidateProbeCache, PROBE_CACHE_KEYS } from "../deps/cache.js";
 import type { AudioEnhancer, DenoiseRequest, DenoiseResult } from "./types.js";
 
 const MODEL_NAME = "DeepFilterNet3";
@@ -79,7 +80,7 @@ export class DeepFilterNetEnhancer implements AudioEnhancer {
       inputPath,
     ]);
 
-    const engineArgs = [
+    const engineArgs = (spec: DfnCommandSpec) => [
       ...spec.args,
       inputPath,
       "-o", workDir,
@@ -88,16 +89,40 @@ export class DeepFilterNetEnhancer implements AudioEnhancer {
         ? ["--atten-lim", String(request.attenLimDb)]
         : []),
     ];
-    const command = `${spec.display} ${engineArgs.slice(spec.args.length).join(" ")}`;
 
     // deepFilter logs tqdm-style percent lines to stderr on the Python path;
     // forward the latest percentage when present (best effort).
     let lastPercent = 0;
-    const result = await execa(spec.command, engineArgs, {
-      reject: false,
-      timeout: 0,
-      all: true,
-    });
+    let result;
+    try {
+      result = await execa(spec.command, engineArgs(spec), {
+        reject: false,
+        timeout: 0,
+        all: true,
+      });
+    } catch {
+      // A cached discovery may be stale (the CLI moved or was removed after
+      // the probe); rediscover once and retry before failing.
+      await invalidateProbeCache(PROBE_CACHE_KEYS.deepfilternet);
+      const rediscovered = await discoverDeepFilterNet();
+      if (!rediscovered.available || !rediscovered.commandSpec) {
+        throw new Error(
+          `DeepFilterNet is no longer reachable via '${spec.display}'. ${rediscovered.error ?? ""}`.trim(),
+        );
+      }
+      this.commandSpec = rediscovered.commandSpec;
+      const retrySpec = rediscovered.commandSpec;
+      if (retrySpec.variant === "rust" && request.attenLimDb !== undefined) {
+        throw new Error(
+          "--dfn-atten requires the Python deepFilter CLI; the Rust deep-filter binary does not support attenuation limits",
+        );
+      }
+      result = await execa(retrySpec.command, engineArgs(retrySpec), {
+        reject: false,
+        timeout: 0,
+        all: true,
+      });
+    }
     const output = result.all ?? "";
     if (result.exitCode !== 0) {
       throw new Error(
@@ -129,10 +154,11 @@ export class DeepFilterNetEnhancer implements AudioEnhancer {
       );
     }
 
+    const usedSpec = this.commandSpec ?? spec;
     return {
       outputFile,
-      engineVersion: spec.variant === "python" ? MODEL_NAME : "deep-filter (Rust)",
-      command,
+      engineVersion: usedSpec.variant === "python" ? MODEL_NAME : "deep-filter (Rust)",
+      command: `${usedSpec.display} ${engineArgs(usedSpec).slice(usedSpec.args.length).join(" ")}`,
     };
   }
 }

@@ -101,7 +101,10 @@ media-transcriber doctor --whisper-command "whisper"
 media-transcriber doctor --enhancer deepfilternet
 media-transcriber doctor --all
 media-transcriber doctor --json
+media-transcriber doctor --no-cache
 ```
+
+**Probe cache.** Discovering local Whisper or DeepFilterNet spawns a Python process that imports PyTorch, which costs seconds. Dependency probe results (ffmpeg, Whisper, DeepFilterNet, NeMo, CUDA availability) are therefore cached on disk and reused across commands: positive results for 1 hour, "not found" results for 10 minutes. This makes repeated `doctor` and `transcribe` runs start in a fraction of a second instead of re-probing every time. The cache is skipped automatically when `MEDIA_TRANSCRIBER_WHISPER_COMMAND` / `MEDIA_TRANSCRIBER_DFN_COMMAND` overrides are set, invalidated after a `setup` install, and self-heals if a cached tool stops launching. Bypass it for a single run with `--no-cache` (doctor) or `MEDIA_TRANSCRIBER_NO_CACHE=1` (any command). The cache lives in the platform cache directory (`~/.cache/media-transcriber` on Linux, `~/Library/Caches/media-transcriber` on macOS, `%LOCALAPPDATA%\media-transcriber\cache` on Windows) and can be redirected with `MEDIA_TRANSCRIBER_CACHE_DIR`.
 
 ### Setup
 

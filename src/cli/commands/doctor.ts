@@ -16,6 +16,7 @@ import {
   listEnhancers,
   registerBuiltinEnhancers,
 } from "../../enhancers/registry.js";
+import { setProbeCacheDisabled } from "../../deps/cache.js";
 
 interface DoctorOptions {
   backend?: string;
@@ -24,6 +25,7 @@ interface DoctorOptions {
   whisperCommand?: string;
   all?: boolean;
   json?: boolean;
+  noCache?: boolean;
 }
 
 interface DoctorReport {
@@ -82,8 +84,14 @@ export const doctorCommand = new Command("doctor")
   .option("--whisper-command <command>", `Local Whisper command override (env: ${WHISPER_COMMAND_ENV})`)
   .option("--all", "Show all backend availability without making optional backends fatal")
   .option("--json", "Machine-readable JSON output for scripts and AI agents")
+  .option("--no-cache", "Bypass the probe cache and re-run all dependency discovery")
   .action(async (opts: DoctorOptions) => {
     registerBuiltinBackends();
+    registerBuiltinEnhancers();
+
+    if (opts.noCache) {
+      setProbeCacheDisabled();
+    }
 
     const selectedBackend = opts.backend ?? defaultConfig.backend;
     const selected = getBackend(selectedBackend);
@@ -98,34 +106,83 @@ export const doctorCommand = new Command("doctor")
       process.exit(ExitCode.CONFIG_ERROR);
     }
 
-    const ffmpegStatus = await checkFfmpeg();
-    const backendNames = opts.all ? listBackends() : [selectedBackend];
-    const backends: BackendReadiness[] = [];
-
-    for (const name of backendNames) {
-      const backend = getBackend(name)!;
-      const config = configSchema.parse({
-        backend: name,
-        whisperModel: backend.defaultModel,
-        openaiApiKey: opts.apiKey,
-        localWhisperCommand: opts.whisperCommand ?? process.env[WHISPER_COMMAND_ENV],
-      });
-      backend.init(config);
-      const status = await backend.checkAvailability();
-      backends.push({
-        name: backend.name,
-        displayName: backend.displayName,
-        selected: backend.name === selectedBackend,
-        available: status.available,
-        version: status.version,
-        error: status.error,
-        installHint: status.installHint,
-        source: status.source,
-        command: status.command,
-        defaultModel: backend.defaultModel,
-        supportedModels: backend.supportedModels(),
-      });
+    let selectedEnhancerName: string | undefined;
+    if (opts.enhancer) {
+      selectedEnhancerName = opts.enhancer.trim().toLowerCase();
+      if (!getEnhancer(selectedEnhancerName)) {
+        const message = `Unknown enhancer '${selectedEnhancerName}'. Available enhancers: ${listEnhancers().join(", ")}`;
+        if (opts.json) {
+          console.log(JSON.stringify({ error: "config_error", message }, null, 2));
+        } else {
+          console.error(pc.red(message));
+        }
+        process.exit(ExitCode.CONFIG_ERROR);
+      }
     }
+
+    // FFmpeg, backends, and enhancers are independent probes; run them all
+    // concurrently so the slowest (a torch-importing CLI probe) bounds the
+    // total instead of their sum.
+    const backendNames = opts.all ? listBackends() : [selectedBackend];
+
+    const backendsPromise = Promise.all(
+      backendNames.map(async (name) => {
+        const backend = getBackend(name)!;
+        const config = configSchema.parse({
+          backend: name,
+          whisperModel: backend.defaultModel,
+          openaiApiKey: opts.apiKey,
+          localWhisperCommand: opts.whisperCommand ?? process.env[WHISPER_COMMAND_ENV],
+        });
+        backend.init(config);
+        const status = await backend.checkAvailability();
+        return {
+          name: backend.name,
+          displayName: backend.displayName,
+          selected: backend.name === selectedBackend,
+          available: status.available,
+          version: status.version,
+          error: status.error,
+          installHint: status.installHint,
+          source: status.source,
+          command: status.command,
+          defaultModel: backend.defaultModel,
+          supportedModels: backend.supportedModels(),
+        } satisfies BackendReadiness;
+      }),
+    );
+
+    const enhancersPromise = Promise.all(
+      listEnhancers().map(async (name) => {
+        const enhancer = getEnhancer(name)!;
+        const enhancerSelected = enhancer.name === selectedEnhancerName;
+        // Remote enhancers are only probed when explicitly selected (or --all):
+        // a plain local diagnostics command must not phone home, and an
+        // offline machine should not see "unreachable" noise.
+        const probe = !enhancer.requiresUpload || enhancerSelected || opts.all === true;
+        const status = probe ? await enhancer.checkAvailability() : null;
+        enhancer.init(configSchema.parse({}));
+        return {
+          name: enhancer.name,
+          displayName: enhancer.displayName,
+          selected: enhancerSelected,
+          available: status?.available ?? false,
+          version: status?.version,
+          error: status?.error ?? (probe ? undefined : "remote; unchecked (pass --enhancer unise to probe)"),
+          installHint: status?.installHint,
+          source: status?.source,
+          command: status?.command,
+          requiresUpload: enhancer.requiresUpload,
+          experimental: enhancer.experimental === true,
+        } satisfies EnhancerReadiness;
+      }),
+    );
+
+    const [ffmpegStatus, backends, enhancers] = await Promise.all([
+      checkFfmpeg(),
+      backendsPromise,
+      enhancersPromise,
+    ]);
 
     const selectedStatus = backends.find((backend) => backend.name === selectedBackend)!;
     const errors: string[] = [];
@@ -141,47 +198,6 @@ export const doctorCommand = new Command("doctor")
           `Run 'media-transcriber doctor --backend ${selectedBackend}' after setup to verify readiness.`,
         ]
       : [];
-
-    // Enhancers: always show the inventory; fatal only when one is selected
-    registerBuiltinEnhancers();
-    let selectedEnhancerName: string | undefined;
-    if (opts.enhancer) {
-      selectedEnhancerName = opts.enhancer.trim().toLowerCase();
-      if (!getEnhancer(selectedEnhancerName)) {
-        const message = `Unknown enhancer '${selectedEnhancerName}'. Available enhancers: ${listEnhancers().join(", ")}`;
-        if (opts.json) {
-          console.log(JSON.stringify({ error: "config_error", message }, null, 2));
-        } else {
-          console.error(pc.red(message));
-        }
-        process.exit(ExitCode.CONFIG_ERROR);
-      }
-    }
-
-    const enhancers: EnhancerReadiness[] = [];
-    for (const name of listEnhancers()) {
-      const enhancer = getEnhancer(name)!;
-      const enhancerSelected = enhancer.name === selectedEnhancerName;
-      // Remote enhancers are only probed when explicitly selected (or --all):
-      // a plain local diagnostics command must not phone home, and an
-      // offline machine should not see "unreachable" noise.
-      const probe = !enhancer.requiresUpload || enhancerSelected || opts.all === true;
-      const status = probe ? await enhancer.checkAvailability() : null;
-      enhancer.init(configSchema.parse({}));
-      enhancers.push({
-        name: enhancer.name,
-        displayName: enhancer.displayName,
-        selected: enhancerSelected,
-        available: status?.available ?? false,
-        version: status?.version,
-        error: status?.error ?? (probe ? undefined : "remote; unchecked (pass --enhancer unise to probe)"),
-        installHint: status?.installHint,
-        source: status?.source,
-        command: status?.command,
-        requiresUpload: enhancer.requiresUpload,
-        experimental: enhancer.experimental === true,
-      });
-    }
 
     const selectedEnhancerStatus = selectedEnhancerName
       ? enhancers.find((e) => e.name === selectedEnhancerName)!

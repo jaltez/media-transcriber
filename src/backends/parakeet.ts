@@ -9,6 +9,7 @@ import {
   discoverParakeet,
   type ParakeetCommandSpec,
 } from "../deps/parakeet.js";
+import { invalidateProbeCache, PROBE_CACHE_KEYS } from "../deps/cache.js";
 import { buildSrtFromSegments, type TimedTextSegment } from "../pipeline/transcript-merger.js";
 
 interface ParakeetOutput {
@@ -80,12 +81,11 @@ export class ParakeetBackend implements TranscriptionBackend {
       env["CUDA_VISIBLE_DEVICES"] = "0";
     }
 
-    let result;
-    try {
-      result = await execa(
-        commandSpec.command,
+    const launch = (spec: ParakeetCommandSpec) =>
+      execa(
+        spec.command,
         [
-          ...commandSpec.args,
+          ...spec.args,
           "--model", model,
           "--device", device,
           "--output", resultPath,
@@ -93,8 +93,26 @@ export class ParakeetBackend implements TranscriptionBackend {
         ],
         { env, reject: false },
       );
+
+    let result;
+    try {
+      result = await launch(commandSpec);
     } catch (err) {
-      throw new Error(`Failed to launch NeMo: ${err instanceof Error ? err.message : err}`);
+      // A cached discovery may be stale (Python env removed after the probe);
+      // rediscover once and retry before failing.
+      await invalidateProbeCache(PROBE_CACHE_KEYS.parakeet);
+      const rediscovered = await discoverParakeet();
+      if (!rediscovered.available || !rediscovered.commandSpec) {
+        throw new Error(
+          `NeMo is no longer reachable via '${commandSpec.display}'. ${rediscovered.error ?? ""}`.trim(),
+        );
+      }
+      this.commandSpec = rediscovered.commandSpec;
+      try {
+        result = await launch(rediscovered.commandSpec);
+      } catch (retryErr) {
+        throw new Error(`Failed to launch NeMo: ${retryErr instanceof Error ? retryErr.message : retryErr}`);
+      }
     }
 
     if (result.exitCode !== 0 || !existsSync(resultPath)) {

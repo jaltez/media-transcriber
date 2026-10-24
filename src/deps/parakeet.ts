@@ -1,6 +1,7 @@
 import { execa } from "execa";
 import type { DependencyStatus } from "../types/index.js";
 import { checkCommand } from "./checker.js";
+import { PROBE_CACHE_KEYS, withProbeCache } from "./cache.js";
 import { findPythonCommand } from "./whisper.js";
 
 export type ParakeetSource = "python" | "uv";
@@ -268,6 +269,14 @@ async function getNemoVersion(spec: ParakeetCommandSpec): Promise<string | undef
  * environment, cached after the first build).
  */
 export async function discoverParakeet(): Promise<ParakeetStatus> {
+  return withProbeCache(
+    PROBE_CACHE_KEYS.parakeet,
+    (status) => status.available === true,
+    () => discoverParakeetFresh(),
+  );
+}
+
+async function discoverParakeetFresh(): Promise<ParakeetStatus> {
   const candidates: Array<Promise<ParakeetCommandSpec | null>> = [
     findPythonParakeet(),
     findUvParakeet(),

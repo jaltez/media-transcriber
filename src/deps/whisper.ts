@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import type { DependencyStatus, DevicePolicy } from "../types/index.js";
 import { checkCommand } from "./checker.js";
+import { PROBE_CACHE_KEYS, withProbeCache } from "./cache.js";
 
 export const WHISPER_COMMAND_ENV = "MEDIA_TRANSCRIBER_WHISPER_COMMAND";
 
@@ -71,6 +72,7 @@ export function parseCommandLine(commandLine: string): { command: string; args: 
 export async function discoverLocalWhisper(
   overrideCommand = process.env[WHISPER_COMMAND_ENV],
 ): Promise<LocalWhisperStatus> {
+  // Overrides are env-specific and explicit: always probe fresh, never cache.
   if (overrideCommand?.trim()) {
     const parsed = parseCommandLine(overrideCommand);
     const spec: CommandSpec = {
@@ -81,6 +83,14 @@ export async function discoverLocalWhisper(
     return checkWhisperSpec(spec, true);
   }
 
+  return withProbeCache(
+    PROBE_CACHE_KEYS.whisper,
+    (status) => status.available === true,
+    () => discoverLocalWhisperFromPath(),
+  );
+}
+
+async function discoverLocalWhisperFromPath(): Promise<LocalWhisperStatus> {
   const pathSpec: CommandSpec = {
     command: "whisper",
     args: [],
@@ -90,22 +100,18 @@ export async function discoverLocalWhisper(
   const pathStatus = await checkWhisperSpec(pathSpec, false);
   if (pathStatus.available) return pathStatus;
 
-  const uvSpec = await findUvToolWhisper();
-  if (uvSpec) {
-    const uvStatus = await checkWhisperSpec(uvSpec, false);
-    if (uvStatus.available) return uvStatus;
-  }
+  // Candidate discovery is independent per source; run it concurrently and
+  // probe in priority order afterwards.
+  const [uvSpec, pipxSpec, pythonSpec] = await Promise.all([
+    findUvToolWhisper(),
+    findPipxWhisper(),
+    findPythonWhisper(),
+  ]);
 
-  const pipxSpec = await findPipxWhisper();
-  if (pipxSpec) {
-    const pipxStatus = await checkWhisperSpec(pipxSpec, false);
-    if (pipxStatus.available) return pipxStatus;
-  }
-
-  const pythonSpec = await findPythonWhisper();
-  if (pythonSpec) {
-    const pythonStatus = await checkWhisperSpec(pythonSpec, false);
-    if (pythonStatus.available) return pythonStatus;
+  for (const spec of [uvSpec, pipxSpec, pythonSpec]) {
+    if (!spec) continue;
+    const status = await checkWhisperSpec(spec, false);
+    if (status.available) return status;
   }
 
   return {
@@ -271,27 +277,43 @@ export async function findPythonCommand(): Promise<{
   args: string[];
   display: string;
 } | null> {
-  const candidates = process.platform === "win32"
-    ? [
-        { command: "python", args: [] as string[], display: "python" },
-        { command: "py", args: ["-3"], display: "py -3" },
-      ]
-    : [{ command: "python3", args: [] as string[], display: "python3" }];
+  // The interpreter choice cannot change mid-process; memoize so repeated
+  // probes (device detection, version lookup) don't respawn `python --version`.
+  pythonCommandMemo ??= (async () => {
+    const candidates = process.platform === "win32"
+      ? [
+          { command: "python", args: [] as string[], display: "python" },
+          { command: "py", args: ["-3"], display: "py -3" },
+        ]
+      : [{ command: "python3", args: [] as string[], display: "python3" }];
 
-  for (const candidate of candidates) {
-    try {
-      const result = await execa(candidate.command, [...candidate.args, "--version"], {
-        timeout: 10_000,
-        reject: false,
-      });
-      if (result.exitCode === 0) return candidate;
-    } catch {
-      // Try the next Python command.
+    for (const candidate of candidates) {
+      try {
+        const result = await execa(candidate.command, [...candidate.args, "--version"], {
+          timeout: 10_000,
+          reject: false,
+        });
+        if (result.exitCode === 0) return candidate;
+      } catch {
+        // Try the next Python command.
+      }
     }
-  }
 
-  return null;
+    return null;
+  })();
+
+  return pythonCommandMemo;
 }
+
+let pythonCommandMemo: Promise<{
+  command: string;
+  args: string[];
+  display: string;
+} | null> | null = null;
+
+// Process-level memo of CUDA probes: batch transcription resolves the device
+// for every file, and each probe otherwise costs a full torch import.
+const cudaProbes = new Map<string, Promise<boolean>>();
 
 async function hasCudaForSpec(spec: CommandSpec): Promise<boolean> {
   const pythonCommand = spec.pythonCommand
@@ -300,27 +322,41 @@ async function hasCudaForSpec(spec: CommandSpec): Promise<boolean> {
 
   if (!pythonCommand) return false;
 
-  try {
-    const result = await execa(
-      pythonCommand.command,
-      [
-        ...pythonCommand.args,
-        "-c",
-        // torch.cuda.is_available() returns True even when the installed
-        // PyTorch CUDA build lacks kernel images for the GPU's compute
-        // capability (e.g. RTX 5080 Blackwell / sm_120).  We perform a tiny
-        // tensor operation on the GPU to confirm the device is truly usable.
-        'import torch;' +
-        'assert torch.cuda.is_available(), "CUDA not available";' +
-        'torch.zeros(1, device="cuda");' +
-        'print("ok")',
-      ],
-      { timeout: 15_000, reject: false },
+  const cacheKey = `cuda-v1-${pythonCommand.command}-${pythonCommand.args.join("-")}`
+    .replace(/[^a-zA-Z0-9._-]+/g, "-");
+
+  let probe = cudaProbes.get(cacheKey);
+  if (probe === undefined) {
+    probe = withProbeCache(
+      cacheKey,
+      (usable) => usable === true,
+      async () => {
+        try {
+          const result = await execa(
+            pythonCommand.command,
+            [
+              ...pythonCommand.args,
+              "-c",
+              // torch.cuda.is_available() returns True even when the installed
+              // PyTorch CUDA build lacks kernel images for the GPU's compute
+              // capability (e.g. RTX 5080 Blackwell / sm_120).  We perform a tiny
+              // tensor operation on the GPU to confirm the device is truly usable.
+              'import torch;' +
+              'assert torch.cuda.is_available(), "CUDA not available";' +
+              'torch.zeros(1, device="cuda");' +
+              'print("ok")',
+            ],
+            { timeout: 15_000, reject: false },
+          );
+          return result.exitCode === 0;
+        } catch {
+          return false;
+        }
+      },
     );
-    return result.exitCode === 0;
-  } catch {
-    return false;
+    cudaProbes.set(cacheKey, probe);
   }
+  return probe;
 }
 
 async function getWhisperVersion(spec: CommandSpec): Promise<string | undefined> {

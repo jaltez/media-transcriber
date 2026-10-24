@@ -13,6 +13,7 @@ import {
 import type { TranscriptionBackend } from "../../backends/types.js";
 import { configSchema, defaultConfig } from "../../config/schema.js";
 import { checkCommand } from "../../deps/checker.js";
+import { invalidateProbeCache } from "../../deps/cache.js";
 import { checkFfmpeg } from "../../deps/ffmpeg.js";
 import {
   discoverLocalWhisper,
@@ -448,6 +449,11 @@ async function runInstall(option: InstallOption): Promise<void> {
     return;
   }
 
+  // Discovery results cached before the install are now stale (e.g. a
+  // negative whisper probe); drop them so the readiness check below and the
+  // next doctor/transcribe run see the freshly installed tool.
+  await invalidateProbeCache();
+
   if (!option.followUp) return;
   try {
     await execa(option.followUp.command, option.followUp.args, { stdio: "inherit" });
@@ -459,14 +465,10 @@ async function runInstall(option: InstallOption): Promise<void> {
 }
 
 async function availableInstallOptions(options: InstallOption[]): Promise<InstallOption[]> {
-  const available: InstallOption[] = [];
-  for (const option of options) {
-    const status = await checkCommand(option.availabilityCommand, option.availabilityArgs ?? ["--version"]);
-    if (status.available) {
-      available.push(option);
-    }
-  }
-  return available;
+  const statuses = await Promise.all(
+    options.map((option) => checkCommand(option.availabilityCommand, option.availabilityArgs ?? ["--version"])),
+  );
+  return options.filter((_, index) => statuses[index]!.available);
 }
 
 function ffmpegInstallOptions(): InstallOption[] {
