@@ -65,7 +65,8 @@ export function buildSrtFromSegments(segments: TimedTextSegment[]): string {
 
 /**
  * Parse an SRT file into structured entries.
- */export function parseSrt(content: string): SrtEntry[] {
+ */
+export function parseSrt(content: string): SrtEntry[] {
   const entries: SrtEntry[] = [];
   const lines = content.split(/\r?\n/);
   let i = 0;

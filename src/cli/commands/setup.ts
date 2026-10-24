@@ -14,7 +14,7 @@ import type { TranscriptionBackend } from "../../backends/types.js";
 import { configSchema, defaultConfig } from "../../config/schema.js";
 import { checkCommand } from "../../deps/checker.js";
 import { invalidateProbeCache } from "../../deps/cache.js";
-import { checkFfmpeg } from "../../deps/ffmpeg.js";
+import { checkFfmpeg, resetFfmpegCheck } from "../../deps/ffmpeg.js";
 import {
   discoverLocalWhisper,
   findPythonCommand,
@@ -451,8 +451,10 @@ async function runInstall(option: InstallOption): Promise<void> {
 
   // Discovery results cached before the install are now stale (e.g. a
   // negative whisper probe); drop them so the readiness check below and the
-  // next doctor/transcribe run see the freshly installed tool.
+  // next doctor/transcribe run see the freshly installed tool. The in-process
+  // ffmpeg memo must be reset too, or setup reports a stale "not ready".
   await invalidateProbeCache();
+  resetFfmpegCheck();
 
   if (!option.followUp) return;
   try {

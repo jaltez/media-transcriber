@@ -94,12 +94,11 @@ export class ParakeetBackend implements TranscriptionBackend {
         { env, reject: false },
       );
 
-    let result;
-    try {
-      result = await launch(commandSpec);
-    } catch (err) {
-      // A cached discovery may be stale (Python env removed after the probe);
-      // rediscover once and retry before failing.
+    let result = await launch(commandSpec);
+    if (typeof result.exitCode !== "number") {
+      // execa with reject:false resolves spawn failures (ENOENT from a stale
+      // cached spec) instead of throwing; a missing exit code means the
+      // command never launched. Rediscover once and retry before failing.
       await invalidateProbeCache(PROBE_CACHE_KEYS.parakeet);
       const rediscovered = await discoverParakeet();
       if (!rediscovered.available || !rediscovered.commandSpec) {
@@ -108,11 +107,7 @@ export class ParakeetBackend implements TranscriptionBackend {
         );
       }
       this.commandSpec = rediscovered.commandSpec;
-      try {
-        result = await launch(rediscovered.commandSpec);
-      } catch (retryErr) {
-        throw new Error(`Failed to launch NeMo: ${retryErr instanceof Error ? retryErr.message : retryErr}`);
-      }
+      result = await launch(rediscovered.commandSpec);
     }
 
     if (result.exitCode !== 0 || !existsSync(resultPath)) {

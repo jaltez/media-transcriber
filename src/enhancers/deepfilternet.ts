@@ -93,16 +93,15 @@ export class DeepFilterNetEnhancer implements AudioEnhancer {
     // deepFilter logs tqdm-style percent lines to stderr on the Python path;
     // forward the latest percentage when present (best effort).
     let lastPercent = 0;
-    let result;
-    try {
-      result = await execa(spec.command, engineArgs(spec), {
-        reject: false,
-        timeout: 0,
-        all: true,
-      });
-    } catch {
-      // A cached discovery may be stale (the CLI moved or was removed after
-      // the probe); rediscover once and retry before failing.
+    let result = await execa(spec.command, engineArgs(spec), {
+      reject: false,
+      timeout: 0,
+      all: true,
+    });
+    if (typeof result.exitCode !== "number") {
+      // execa with reject:false resolves spawn failures (ENOENT from a stale
+      // cached spec) instead of throwing; a missing exit code means the
+      // command never launched. Rediscover once and retry before failing.
       await invalidateProbeCache(PROBE_CACHE_KEYS.deepfilternet);
       const rediscovered = await discoverDeepFilterNet();
       if (!rediscovered.available || !rediscovered.commandSpec) {

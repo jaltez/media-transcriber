@@ -271,11 +271,19 @@ async function findPythonWhisper(): Promise<CommandSpec | null> {
     pythonArgs: python.args,
   };
 }
+let pythonCommandMemo: Promise<{
+  command: string;
+  args: string[];
+  display: string;
+  executable: string;
+} | null> | null = null;
 
 export async function findPythonCommand(): Promise<{
   command: string;
   args: string[];
   display: string;
+  /** Resolved executable path (sys.executable); falls back to the command name */
+  executable: string;
 } | null> {
   // The interpreter choice cannot change mid-process; memoize so repeated
   // probes (device detection, version lookup) don't respawn `python --version`.
@@ -293,7 +301,18 @@ export async function findPythonCommand(): Promise<{
           timeout: 10_000,
           reject: false,
         });
-        if (result.exitCode === 0) return candidate;
+        if (result.exitCode !== 0) continue;
+        // `python3` resolves to different executables across venvs/PATH;
+        // capture sys.executable so consumers can key on the real one.
+        const resolved = await execa(
+          candidate.command,
+          [...candidate.args, "-c", "import sys; print(sys.executable)"],
+          { timeout: 10_000, reject: false },
+        );
+        const executable = resolved.exitCode === 0 && resolved.stdout.trim()
+          ? resolved.stdout.trim().split("\n")[0]!
+          : candidate.command;
+        return { ...candidate, executable };
       } catch {
         // Try the next Python command.
       }
@@ -304,12 +323,6 @@ export async function findPythonCommand(): Promise<{
 
   return pythonCommandMemo;
 }
-
-let pythonCommandMemo: Promise<{
-  command: string;
-  args: string[];
-  display: string;
-} | null> | null = null;
 
 // Process-level memo of CUDA probes: batch transcription resolves the device
 // for every file, and each probe otherwise costs a full torch import.
@@ -322,7 +335,11 @@ async function hasCudaForSpec(spec: CommandSpec): Promise<boolean> {
 
   if (!pythonCommand) return false;
 
-  const cacheKey = `cuda-v1-${pythonCommand.command}-${pythonCommand.args.join("-")}`
+  // Key on the resolved interpreter executable, not the command name: the
+  // same `python3` name resolves to different interpreters across venvs, and
+  // a CUDA verdict from one environment must not be served to another.
+  const interpreter = await findPythonCommand();
+  const cacheKey = `cuda-v1-${interpreter?.executable ?? pythonCommand.command}-${pythonCommand.args.join("-")}`
     .replace(/[^a-zA-Z0-9._-]+/g, "-");
 
   let probe = cudaProbes.get(cacheKey);
