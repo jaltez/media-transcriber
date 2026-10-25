@@ -15,6 +15,7 @@ export class BasicEnhancer implements AudioEnhancer {
   readonly name = "basic" as const;
   readonly displayName = "FFmpeg (built-in)";
   readonly requiresUpload = false;
+  readonly filterOnly = true as const;
 
   init(_config: Config): void {
     // No configuration needed.

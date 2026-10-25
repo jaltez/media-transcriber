@@ -28,7 +28,6 @@ export interface DenoiseResult {
   /** External command invoked, recorded verbatim in the enhancement report */
   command?: string;
 }
-
 /**
  * Interface that every enhancement engine must implement. Mirrors
  * TranscriptionBackend: registry-driven, doctor-checkable, config-initialized.
@@ -40,6 +39,13 @@ export interface AudioEnhancer {
   readonly experimental?: boolean;
   /** True when the engine sends audio to a remote service */
   readonly requiresUpload: boolean;
+  /**
+   * The engine contributes only an ffmpeg filter (denoise() sets `filter`,
+   * never produces an output file, and ignores `request.inputFile`'s format).
+   * This lets the chain fold conditioning, denoise, and post filters into a
+   * single decode/encode pass instead of three.
+   */
+  readonly filterOnly?: true;
 
   checkAvailability(): Promise<DependencyStatus>;
   init(config: Config): void;

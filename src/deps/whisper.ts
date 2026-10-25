@@ -297,22 +297,18 @@ export async function findPythonCommand(): Promise<{
 
     for (const candidate of candidates) {
       try {
-        const result = await execa(candidate.command, [...candidate.args, "--version"], {
-          timeout: 10_000,
-          reject: false,
-        });
-        if (result.exitCode !== 0) continue;
-        // `python3` resolves to different executables across venvs/PATH;
-        // capture sys.executable so consumers can key on the real one.
+        // A single spawn both validates the interpreter and resolves it:
+        // `python3` maps to different executables across venvs/PATH, and
+        // sys.executable is what the CUDA cache key needs.
         const resolved = await execa(
           candidate.command,
           [...candidate.args, "-c", "import sys; print(sys.executable)"],
           { timeout: 10_000, reject: false },
         );
-        const executable = resolved.exitCode === 0 && resolved.stdout.trim()
-          ? resolved.stdout.trim().split("\n")[0]!
-          : candidate.command;
-        return { ...candidate, executable };
+        if (typeof resolved.exitCode !== "number" || resolved.exitCode !== 0 || !resolved.stdout.trim()) {
+          continue;
+        }
+        return { ...candidate, executable: resolved.stdout.trim().split("\n")[0]! };
       } catch {
         // Try the next Python command.
       }

@@ -1,5 +1,6 @@
 import { execa } from "execa";
-import { mkdir, readdir } from "node:fs/promises";
+import { z } from "zod";
+import { mkdir, readdir, rename } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { Config } from "../config/schema.js";
 import type { DependencyStatus } from "../types/index.js";
@@ -70,15 +71,21 @@ export class DeepFilterNetEnhancer implements AudioEnhancer {
     const inputName = "input.wav";
     const inputPath = join(workDir, inputName);
 
-    // The chain already produced 48 kHz s16 WAV; normalize channel layout and
-    // container so both the Python CLI and the Rust binary accept it.
-    await execa("ffmpeg", [
-      "-hide_banner", "-loglevel", "error", "-y",
-      "-i", request.inputFile,
-      "-vn", "-ar", "48000", "-ac", "2",
-      "-c:a", "pcm_s16le",
-      inputPath,
-    ]);
+    // The chain already produced 48 kHz s16 WAV. Only re-encode when the
+    // channel layout needs upmixing to stereo; a conformant stereo file is
+    // moved as-is (saves a full decode/encode of ~115 MB per 5-min part).
+    const conforms = await probeConformant(request.inputFile);
+    if (conforms) {
+      await rename(request.inputFile, inputPath);
+    } else {
+      await execa("ffmpeg", [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", request.inputFile,
+        "-vn", "-ar", "48000", "-ac", "2",
+        "-c:a", "pcm_s16le",
+        inputPath,
+      ]);
+    }
 
     const engineArgs = (spec: DfnCommandSpec) => [
       ...spec.args,
@@ -159,5 +166,34 @@ export class DeepFilterNetEnhancer implements AudioEnhancer {
       engineVersion: usedSpec.variant === "python" ? MODEL_NAME : "deep-filter (Rust)",
       command: `${usedSpec.display} ${engineArgs(usedSpec).slice(usedSpec.args.length).join(" ")}`,
     };
+  }
+}
+
+const probeStreamSchema = z.object({
+  streams: z
+    .object({
+      sample_rate: z.string().optional(),
+      channels: z.number().optional(),
+      codec_name: z.string().optional(),
+    })
+    .array()
+    .min(1),
+});
+
+/** True when the WAV is already 48 kHz stereo pcm_s16 (no normalize pass needed). */
+async function probeConformant(file: string): Promise<boolean> {
+  const result = await execa(
+    "ffprobe",
+    ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels,codec_name", "-of", "json", file],
+    { reject: false, timeout: 10_000 },
+  );
+  if (result.exitCode !== 0) return false;
+  try {
+    const parsed = probeStreamSchema.safeParse(JSON.parse(result.stdout));
+    if (!parsed.success) return false;
+    const stream = parsed.data.streams[0]!;
+    return stream.sample_rate === "48000" && stream.channels === 2 && stream.codec_name === "pcm_s16";
+  } catch {
+    return false;
   }
 }

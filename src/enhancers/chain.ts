@@ -86,100 +86,164 @@ export async function runEnhancement(
     "highpass=f=70",
     ...(analysis.humNotches.length > 0 ? [notchesToAf(analysis.humNotches)] : []),
   ];
-  const conditionedFile = join(outputFolder, `${baseName}_cond.wav`);
-  await execa("ffmpeg", [
-    "-hide_banner", "-loglevel", "error", "-y",
-    "-i", inputFile,
-    "-vn",
-    "-af", conditioning.join(","),
-    // 48 kHz stereo WAV: the format DeepFilterNet works at; lossless for others.
-    "-ar", "48000",
-    "-c:a", "pcm_s16le",
-    conditionedFile,
-  ]);
-  onProgress(15, "conditioning done");
-
-  // --- Stage 3: engine denoise --------------------------------------------
-  const engineStart = Date.now();
-  const denoised = await enhancer.denoise({
-    inputFile: conditionedFile,
-    tempFolder: outputFolder,
-    attenLimDb: options.attenLimDb,
-    allowUpload: options.allowUpload,
-    onProgress: (percent, message) => onProgress(20 + Math.min(100, percent) * 0.5, message),
-  });
-  const engineMs = Date.now() - engineStart;
-  onProgress(72, "denoise done");
-
-  // --- Stage 4: notches + optional dynamics --------------------------------
-  // The engine filter (when the engine is a pure ffmpeg filter) is applied in
-  // this same pass but reported separately as the engine stage.
-  const appliedPostFilters = [
+  const postFilters = [
     ...(analysis.howlNotches.length > 0 ? [notchesToAf(analysis.howlNotches)] : []),
     ...(options.profile === "master" ? DYNAMICS_FILTERS : []),
   ];
-  const reportPostFilters = [...appliedPostFilters];
-  if (denoised.filter) {
-    appliedPostFilters.unshift(denoised.filter);
-  }
 
-  let postFile = denoised.outputFile;
-  if (appliedPostFilters.length > 0) {
-    postFile = join(outputFolder, `${baseName}_post.wav`);
+  // --- Stages 3+4: engine denoise, then notches/dynamics --------------------
+  // Filter-only engines (e.g. the basic afftdn engine) contribute an ffmpeg
+  // filter and no output file, so conditioning + denoise + post filters fold
+  // into ONE decode/encode pass — three passes and two ~58 MB WAV
+  // intermediates per part become one (~20% faster on the default --enhance
+  // path). External-process engines keep the staged pipeline so their 48 kHz
+  // WAV handoff stays intact.
+  const engineStart = Date.now();
+  const stages: string[] = [];
+  let postFile: string;
+  let engineVersion: string | undefined;
+  let command: string | undefined;
+
+  if (enhancer.filterOnly === true) {
+    const denoised = await enhancer.denoise({
+      inputFile,
+      tempFolder: outputFolder,
+      attenLimDb: options.attenLimDb,
+      allowUpload: options.allowUpload,
+      onProgress: (percent, message) => onProgress(20 + Math.min(100, percent) * 0.5, message),
+    });
+    engineVersion = denoised.engineVersion;
+    command = denoised.command;
+    const foldedFilters = [...conditioning, denoised.filter ?? "", ...postFilters]
+      .filter(Boolean)
+      .join(",");
+    stages.push(foldedFilters);
+
+    const outputFile = join(outputFolder, `${baseName}_enhanced${outputExt}`);
+    if (options.profile === "master") {
+      // loudnorm needs its own measure+apply passes over processed audio
+      postFile = join(outputFolder, `${baseName}_proc.wav`);
+      await execa("ffmpeg", [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", inputFile,
+        "-vn",
+        "-af", foldedFilters,
+        "-ar", "48000",
+        "-c:a", "pcm_s16le",
+        postFile,
+      ]);
+    } else {
+      // asr: the folded pass IS the final encode — one pass total
+      const encodeArgs = outputExt === ".mp3"
+        ? ["-c:a", "libmp3lame", "-q:a", "2"]
+        : ["-c:a", "pcm_s16le"];
+      await execa("ffmpeg", [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", inputFile,
+        "-vn",
+        "-af", foldedFilters,
+        ...encodeArgs,
+        outputFile,
+      ]);
+      postFile = outputFile;
+    }
+    onProgress(82, "chain done (single pass)");
+  } else {
+    const conditionedFile = join(outputFolder, `${baseName}_cond.wav`);
     await execa("ffmpeg", [
       "-hide_banner", "-loglevel", "error", "-y",
-      "-i", denoised.outputFile,
+      "-i", inputFile,
       "-vn",
-      "-af", appliedPostFilters.join(","),
+      "-af", conditioning.join(","),
+      // 48 kHz stereo WAV: the format DeepFilterNet works at; lossless for others.
+      "-ar", "48000",
       "-c:a", "pcm_s16le",
-      postFile,
+      conditionedFile,
     ]);
+    onProgress(15, "conditioning done");
+
+    const denoised = await enhancer.denoise({
+      inputFile: conditionedFile,
+      tempFolder: outputFolder,
+      attenLimDb: options.attenLimDb,
+      allowUpload: options.allowUpload,
+      onProgress: (percent, message) => onProgress(20 + Math.min(100, percent) * 0.5, message),
+    });
+    engineVersion = denoised.engineVersion;
+    command = denoised.command;
+    onProgress(72, "denoise done");
+
+    const appliedPostFilters = [...postFilters];
+    if (denoised.filter) {
+      appliedPostFilters.unshift(denoised.filter);
+    }
+
+    postFile = denoised.outputFile;
+    if (appliedPostFilters.length > 0) {
+      postFile = join(outputFolder, `${baseName}_post.wav`);
+      await execa("ffmpeg", [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", denoised.outputFile,
+        "-vn",
+        "-af", appliedPostFilters.join(","),
+        "-c:a", "pcm_s16le",
+        postFile,
+      ]);
+    }
+    onProgress(82, "post-filters done");
+
+    stages.push(conditioning.join(","));
+    stages.push(denoised.command ?? denoised.filter ?? enhancer.displayName);
+    if (postFilters.length > 0) stages.push(postFilters.join(","));
   }
-  onProgress(82, "post-filters done");
+  const engineMs = Date.now() - engineStart;
 
   // --- Stage 5: final encode (+ loudnorm for master) ------------------------
-  const outputFile = join(outputFolder, `${baseName}_enhanced${outputExt}`);
-  const stages: string[] = [conditioning.join(",")];
-  const engineStage = denoised.command ?? denoised.filter ?? enhancer.displayName;
-  stages.push(engineStage);
-  if (reportPostFilters.length > 0) stages.push(reportPostFilters.join(","));
+  // In the folded asr case the single pass already produced the final file.
+  const finalAlreadyEncoded =
+    enhancer.filterOnly === true && options.profile !== "master";
+  const outputFile = finalAlreadyEncoded
+    ? postFile
+    : join(outputFolder, `${baseName}_enhanced${outputExt}`);
 
   let loudness: EnhancementReport["loudness"];
-  if (options.profile === "master") {
-    const encodeArgs = outputExt === ".mp3"
-      ? ["-c:a", "libmp3lame", "-q:a", "2"]
-      : ["-c:a", "pcm_s16le"];
-    const loudnorm = await applyTwoPassLoudnorm(
-      postFile,
-      outputFile,
-      { integratedLufs: options.loudnessTargetLufs, truePeakDbtp: -1.5, lra: 11 },
-      encodeArgs,
-    );
-    stages.push(loudnorm.appliedAf);
-    if (loudnorm.warning) onProgress(90, loudnorm.warning);
-    const after = await measureLoudness(outputFile);
-    loudness = {
-      beforeLufs: loudnorm.measurement?.inputI ?? null,
-      afterLufs: after.lufs ?? null,
-    };
-  } else {
-    const encodeArgs = outputExt === ".mp3"
-      ? ["-c:a", "libmp3lame", "-q:a", "2"]
-      : ["-c:a", "pcm_s16le"];
-    await execa("ffmpeg", [
-      "-hide_banner", "-loglevel", "error", "-y",
-      "-i", postFile,
-      "-vn",
-      ...encodeArgs,
-      outputFile,
-    ]);
+  if (!finalAlreadyEncoded) {
+    if (options.profile === "master") {
+      const encodeArgs = outputExt === ".mp3"
+        ? ["-c:a", "libmp3lame", "-q:a", "2"]
+        : ["-c:a", "pcm_s16le"];
+      const loudnorm = await applyTwoPassLoudnorm(
+        postFile,
+        outputFile,
+        { integratedLufs: options.loudnessTargetLufs, truePeakDbtp: -1.5, lra: 11 },
+        encodeArgs,
+      );
+      stages.push(loudnorm.appliedAf);
+      if (loudnorm.warning) onProgress(90, loudnorm.warning);
+      const after = await measureLoudness(outputFile);
+      loudness = {
+        beforeLufs: loudnorm.measurement?.inputI ?? null,
+        afterLufs: after.lufs ?? null,
+      };
+    } else {
+      const encodeArgs = outputExt === ".mp3"
+        ? ["-c:a", "libmp3lame", "-q:a", "2"]
+        : ["-c:a", "pcm_s16le"];
+      await execa("ffmpeg", [
+        "-hide_banner", "-loglevel", "error", "-y",
+        "-i", postFile,
+        "-vn",
+        ...encodeArgs,
+        outputFile,
+      ]);
+    }
   }
   onProgress(96, "encode done");
 
   const report: EnhancementReport = {
     engine: enhancer.name,
-    engineVersion: denoised.engineVersion,
-    command: denoised.command,
+    engineVersion,
+    command,
     analysis: {
       humNotches: analysis.humNotches,
       howlNotches: analysis.howlNotches,

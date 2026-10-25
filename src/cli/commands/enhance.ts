@@ -121,11 +121,9 @@ Examples:
       process.exit(ExitCode.CONFIG_ERROR);
     }
 
-    // Preflight: ffmpeg + enhancer
-    const ffmpegStatus = await checkFfmpeg();
-    if (!ffmpegStatus.ffmpeg.available || !ffmpegStatus.ffprobe.available) {
-      fail("missing_dependency", "FFmpeg and ffprobe are required for enhancement.", ExitCode.MISSING_DEPENDENCY, { dependencies: ffmpegStatus });
-    }
+    // Preflight: ffmpeg + enhancer probes run concurrently; ffmpeg errors
+    // keep precedence.
+    const ffmpegStatusPromise = checkFfmpeg();
 
     registerBuiltinEnhancers();
     const enhancerName = (opts.enhancer ?? "basic").trim().toLowerCase();
@@ -162,7 +160,13 @@ Examples:
     });
 
     enhancer.init(config);
-    const enhancerStatus = await enhancer.checkAvailability();
+    const enhancerStatusPromise = enhancer.checkAvailability();
+    const ffmpegStatus = await ffmpegStatusPromise;
+    if (!ffmpegStatus.ffmpeg.available || !ffmpegStatus.ffprobe.available) {
+      fail("missing_dependency", "FFmpeg and ffprobe are required for enhancement.", ExitCode.MISSING_DEPENDENCY, { dependencies: ffmpegStatus });
+    }
+
+    const enhancerStatus = await enhancerStatusPromise;
     if (!enhancerStatus.available) {
       if (jsonMode) {
         console.log(JSON.stringify({ error: "missing_dependency", enhancer: enhancerStatus }));

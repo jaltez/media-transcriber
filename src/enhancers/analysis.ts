@@ -77,13 +77,24 @@ export async function analyzeAudio(
   const humNotches: NotchFilter[] = [];
   const howlNotches: NotchFilter[] = [];
 
-  if (options.humNotch !== false) {
-    const samples = await decodeMono(inputFile, HUM_ANALYSIS_SECONDS);
-    humNotches.push(...detectHumFromSamples(samples, ANALYSIS_SAMPLE_RATE));
-  }
+  const wantHum = options.humNotch !== false;
+  const wantHowl = options.howlNotch === true;
+  if (!wantHum && !wantHowl) return { humNotches, howlNotches };
 
-  if (options.howlNotch === true) {
-    const samples = await decodeMono(inputFile, HOWL_ANALYSIS_SECONDS);
+  // The howl window is a superset of the hum window: decode once at the
+  // larger cap and slice for hum instead of paying a second decode.
+  const samples = await decodeMono(
+    inputFile,
+    wantHowl ? HOWL_ANALYSIS_SECONDS : HUM_ANALYSIS_SECONDS,
+  );
+
+  if (wantHum) {
+    const humSamples = wantHowl
+      ? samples.subarray(0, HUM_ANALYSIS_SECONDS * ANALYSIS_SAMPLE_RATE)
+      : samples;
+    humNotches.push(...detectHumFromSamples(humSamples, ANALYSIS_SAMPLE_RATE));
+  }
+  if (wantHowl) {
     howlNotches.push(...detectHowlFromSamples(samples, ANALYSIS_SAMPLE_RATE));
   }
 

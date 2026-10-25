@@ -11,7 +11,7 @@ import {
   listEnhancers,
   registerBuiltinEnhancers,
 } from "../../enhancers/registry.js";
-import { ENHANCER_IDS, ExitCode, isEnhancerId, SUPPORTED_EXTENSIONS, type EnhancerId } from "../../types/index.js";
+import { ENHANCER_IDS, ExitCode, isEnhancerId, SUPPORTED_EXTENSIONS, type DependencyStatus, type EnhancerId } from "../../types/index.js";
 import {
   isQualityPreset,
   modelForPreset,
@@ -299,42 +299,14 @@ Examples:
       process.exit(ExitCode.CONFIG_ERROR);
     }
 
-    // Check FFmpeg
-    const ffmpegStatus = await checkFfmpeg();
-    if (!ffmpegStatus.ffmpeg.available || !ffmpegStatus.ffprobe.available) {
-      if (jsonMode) {
-        console.log(JSON.stringify({ error: "missing_dependency", dependencies: ffmpegStatus }));
-      } else {
-        console.error(pc.red("\nFFmpeg is required but not installed."));
-        if (!ffmpegStatus.ffmpeg.available && ffmpegStatus.ffmpeg.installHint) {
-          console.error(pc.yellow(`  ${ffmpegStatus.ffmpeg.installHint}`));
-        }
-        if (!ffmpegStatus.ffprobe.available && ffmpegStatus.ffprobe.installHint) {
-          console.error(pc.yellow(`  ${ffmpegStatus.ffprobe.installHint}`));
-        }
-        console.error(pc.gray(`\nRun 'media-transcriber setup ${config.backend}' for guided setup, or 'media-transcriber doctor' for detailed diagnostics.\n`));
-      }
-      process.exit(ExitCode.MISSING_DEPENDENCY);
-    }
-
+    // Availability probes run concurrently (like doctor); results are
+    // consumed in the original order so error precedence is unchanged.
+    const ffmpegStatusPromise = checkFfmpeg();
     backend.init(config);
+    const backendStatusPromise = backend.checkAvailability();
 
-    // Check backend availability
-    const backendStatus = await backend.checkAvailability();
-    if (!backendStatus.available) {
-      if (jsonMode) {
-        console.log(JSON.stringify({ error: "missing_dependency", backend: backendStatus }));
-      } else {
-        console.error(pc.red(`\nBackend '${backend.displayName}' is not available: ${backendStatus.error}`));
-        if (backendStatus.installHint) {
-          console.error(pc.yellow(`  ${backendStatus.installHint}`));
-        }
-        console.error(pc.gray(`\nRun 'media-transcriber setup ${config.backend}' for guided setup, or 'media-transcriber doctor --backend ${config.backend}' for detailed diagnostics.\n`));
-      }
-      process.exit(ExitCode.MISSING_DEPENDENCY);
-    }
-
-    let enhancerLabel: string | undefined;
+    let enhancerStatusPromise: Promise<DependencyStatus> | undefined;
+    let enhancerDisplay: { displayName: string; name: string; requiresUpload: boolean } | undefined;
     if (config.enhancer !== "none") {
       registerBuiltinEnhancers();
       const enhancer = getEnhancer(config.enhancer);
@@ -360,24 +332,66 @@ Examples:
         process.exit(ExitCode.CONFIG_ERROR);
       }
       enhancer.init(config);
-      const enhancerStatus = await enhancer.checkAvailability();
+      enhancerDisplay = enhancer;
+      enhancerStatusPromise = enhancer.checkAvailability();
+    }
+
+    // Check FFmpeg
+    const ffmpegStatus = await ffmpegStatusPromise;
+    if (!ffmpegStatus.ffmpeg.available || !ffmpegStatus.ffprobe.available) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "missing_dependency", dependencies: ffmpegStatus }));
+      } else {
+        console.error(pc.red("\nFFmpeg is required but not installed."));
+        if (!ffmpegStatus.ffmpeg.available && ffmpegStatus.ffmpeg.installHint) {
+          console.error(pc.yellow(`  ${ffmpegStatus.ffmpeg.installHint}`));
+        }
+        if (!ffmpegStatus.ffprobe.available && ffmpegStatus.ffprobe.installHint) {
+          console.error(pc.yellow(`  ${ffmpegStatus.ffprobe.installHint}`));
+        }
+        console.error(pc.gray(`\nRun 'media-transcriber setup ${config.backend}' for guided setup, or 'media-transcriber doctor' for detailed diagnostics.\n`));
+      }
+      process.exit(ExitCode.MISSING_DEPENDENCY);
+    }
+
+    // Check backend availability
+    const backendStatus = await backendStatusPromise;
+    if (!backendStatus.available) {
+      if (jsonMode) {
+        console.log(JSON.stringify({ error: "missing_dependency", backend: backendStatus }));
+      } else {
+        console.error(pc.red(`\nBackend '${backend.displayName}' is not available: ${backendStatus.error}`));
+        if (backendStatus.installHint) {
+          console.error(pc.yellow(`  ${backendStatus.installHint}`));
+        }
+        console.error(pc.gray(`\nRun 'media-transcriber setup ${config.backend}' for guided setup, or 'media-transcriber doctor --backend ${config.backend}' for detailed diagnostics.\n`));
+      }
+      process.exit(ExitCode.MISSING_DEPENDENCY);
+    }
+
+    // Check enhancer availability (when enhancement was requested)
+    if (enhancerStatusPromise && enhancerDisplay) {
+      const enhancerStatus = await enhancerStatusPromise;
       if (!enhancerStatus.available) {
         if (jsonMode) {
           console.log(JSON.stringify({ error: "missing_dependency", enhancer: enhancerStatus }));
         } else {
-          console.error(pc.red(`\nEnhancer '${enhancer.displayName}' is not available: ${enhancerStatus.error}`));
+          console.error(pc.red(`\nEnhancer '${enhancerDisplay.displayName}' is not available: ${enhancerStatus.error}`));
           if (enhancerStatus.installHint) {
             console.error(pc.yellow(`  ${enhancerStatus.installHint}`));
           }
-          console.error(pc.gray(`\nRun 'media-transcriber setup ${enhancer.name}' for guided setup, or 'media-transcriber doctor --enhancer ${enhancer.name}' for detailed diagnostics.\n`));
+          console.error(pc.gray(`\nRun 'media-transcriber setup ${enhancerDisplay.name}' for guided setup, or 'media-transcriber doctor --enhancer ${enhancerDisplay.name}' for detailed diagnostics.\n`));
         }
         process.exit(ExitCode.MISSING_DEPENDENCY);
       }
-      if (!jsonMode && enhancer.requiresUpload) {
-        console.error(pc.yellow(`\nNote: enhancement will upload audio to ${enhancer.displayName}.`));
+      if (!jsonMode && enhancerDisplay.requiresUpload) {
+        console.error(pc.yellow(`\nNote: enhancement will upload audio to ${enhancerDisplay.displayName}.`));
       }
-      enhancerLabel = `${enhancer.displayName} (${config.enhanceProfile})`;
     }
+    let enhancerLabel = enhancerDisplay
+      ? `${enhancerDisplay.displayName} (${config.enhanceProfile})`
+      : undefined;
+
 
     // --- Single file mode ---
     if (isSingleFile) {
