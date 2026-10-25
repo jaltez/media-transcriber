@@ -1,5 +1,4 @@
 import { Command } from "commander";
-import { confirm } from "@inquirer/prompts";
 import { execa } from "execa";
 import pc from "picocolors";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -172,6 +171,9 @@ Examples:
         process.exit(ExitCode.SUCCESS);
       }
       if (!opts.yes) {
+        // Interactive-only; lazy-loaded to keep prompt import cost off
+        // non-interactive invocations (deliberate dynamic-import exception).
+        const { confirm } = await import("@inquirer/prompts");
         const proceed = await confirm({
           message: `Install ${PACKAGE_NAME}@${latest} globally with npm?`,
           default: true,

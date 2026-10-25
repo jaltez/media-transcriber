@@ -1,4 +1,3 @@
-import { confirm, select } from "@inquirer/prompts";
 import { Command } from "commander";
 import { execa } from "execa";
 import pc from "picocolors";
@@ -150,6 +149,9 @@ async function maybeRunEnhancerSmokeTest(enhancer: AudioEnhancer): Promise<void>
     return;
   }
 
+  // Prompts are interactive-only; lazy-loading keeps their ~45 ms import cost
+  // off every CLI invocation (deliberate dynamic-import exception).
+  const { confirm } = await import("@inquirer/prompts");
   const run = await confirm({
     message: "Run an optional smoke test? This may download the model on first use.",
     default: false,
@@ -330,6 +332,7 @@ async function printFinalReadiness(backend: TranscriptionBackend): Promise<boole
 }
 
 async function maybeRunSmokeTest(backend: TranscriptionBackend): Promise<void> {
+  const { confirm } = await import("@inquirer/prompts");
   const run = await confirm({
     message: backend.name === "whisper-api"
       ? "Run an optional smoke test? This makes a tiny API transcription request."
@@ -385,6 +388,7 @@ async function chooseInstallOption(
   options: InstallOption[],
   manualCommands: string[],
 ): Promise<InstallOption | null> {
+  const { confirm, select } = await import("@inquirer/prompts");
   if (options.length === 0) {
     printManualCommands(manualCommands);
     return null;
