@@ -210,6 +210,9 @@ Examples:
 
       if (!jsonMode) {
         console.error(pc.cyan(`[${i + 1}/${inputFiles.length}] ${basename(filePath)}`));
+      } else {
+        // NDJSON progress on stderr, mirroring transcribe's --json mode
+        process.stderr.write(`${JSON.stringify({ event: "file_start", file: filePath, fileNumber: i + 1, totalFiles: inputFiles.length })}\n`);
       }
 
       try {
@@ -260,12 +263,16 @@ Examples:
             : "";
           console.error(pc.green(`    done: ${finalOutput}${notches.length > 0 ? `, notched ${notches.join(", ")}` : ""}${loudness}`));
         }
-
+        if (jsonMode) {
+          process.stderr.write(`${JSON.stringify({ event: "file_complete", file: filePath, success: true })}\n`);
+        }
         results.push({ input: filePath, output: finalOutput, success: true, enhancement: { ...report, outputFile: finalOutput } });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         if (!jsonMode) {
           console.error(pc.red(`    failed: ${message}`));
+        } else {
+          process.stderr.write(`${JSON.stringify({ event: "file_complete", file: filePath, success: false, error: message })}\n`);
         }
         results.push({ input: filePath, output: null, success: false, error: message });
       }
