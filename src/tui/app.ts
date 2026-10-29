@@ -8,6 +8,7 @@ import {
   TabSelectRenderableEvents,
   TextRenderable,
   createCliRenderer,
+  type CliRenderer,
   type KeyEvent,
   type PasteEvent,
 } from "@opentui/core";
@@ -133,14 +134,24 @@ interface TuiState {
   listWindowStart: number;
 }
 
-export async function runTuiApp(): Promise<number> {
-  const renderer = await createCliRenderer({
-    exitOnCtrlC: false,
-    targetFps: 30,
-  });
+export interface TuiApp {
+  /** Resolves when the UI is destroyed; value is the process exit code. */
+  exited: Promise<number>;
+  /** Resolves once the initial directory listing has loaded and rendered. */
+  ready: Promise<void>;
+  destroy(): void;
+}
+
+/**
+ * Build the TUI on an existing renderer (createCliRenderer in production,
+ * createTestRenderer in tests).
+ */
+export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
+  // Guards against stale async listings overwriting newer navigation.
+  let loadSeq = 0;
 
   const state: TuiState = {
-    cwd: process.cwd(),
+    cwd: startDir,
     dirEntries: [],
     showAllFiles: false,
     filterMode: false,
@@ -365,6 +376,8 @@ export async function runTuiApp(): Promise<number> {
 
   // --- Rendering ---------------------------------------------------------------
   function render() {
+    // Async work (loads, folder staging) may finish after quit tears the renderer down.
+    if (destroyed) return;
     toastText.content = state.toast ?? "";
     tabs.setSelectedIndex(MODES.indexOf(state.mode));
     renderList();
@@ -642,11 +655,15 @@ export async function runTuiApp(): Promise<number> {
   }
 
   async function loadDir(dir: string) {
+    const seq = ++loadSeq;
     state.cwd = resolve(dir);
-    state.dirEntries = await listDirectory(state.cwd, state.showAllFiles);
+    const entries = await listDirectory(state.cwd, state.showAllFiles);
+    if (seq !== loadSeq) return; // superseded by newer navigation
+    state.dirEntries = entries;
     state.filterScan = null;
     state.filter = "";
-    filterInput.value = "";
+    // A quit during a directory load destroys the filter input first.
+    if (!filterInput.isDestroyed) filterInput.value = "";
     state.filterMode = false;
     state.cursor = 0;
     state.listWindowStart = 0;
@@ -937,13 +954,36 @@ export async function runTuiApp(): Promise<number> {
   }
 
   renderer.keyInput.on("keypress", (key: KeyEvent) => {
-    // While the filter input holds focus, letters must type into it; only
-    // escape/tab and ctrl-modified globals pass through. The mode tabs
-    // consume just arrows/enter, so every key stays global there.
+    // --- Filter mode: the input owns typing; it must be explicitly exited ---
     const filterFocused = state.focus === "files" && state.filterMode;
-    if (filterFocused && key.ctrl !== true && !["escape", "tab"].includes(key.name)) {
-      // Bare 'q' still quits when there is nothing to type into.
-      if (!(key.name === "q" && state.filter.length === 0)) return;
+    if (filterFocused) {
+      const exitFilterMode = (keepText: boolean) => {
+        state.filterMode = false;
+        if (!keepText) {
+          state.filter = "";
+          filterInput.value = "";
+        }
+        filterInput.blur();
+        state.cursor = 0;
+        state.listWindowStart = 0;
+        render();
+      };
+
+      if (key.name === "escape") {
+        exitFilterMode(false);
+        return;
+      }
+      if (key.name === "return" || key.name === "tab") {
+        // Commit the filter and move on: return keeps the results in view
+        // semantics (text persists in the input for the next search), tab
+        // hands focus to the form.
+        exitFilterMode(true);
+        if (key.name === "tab") setFocus("form");
+        return;
+      }
+      // Bare 'q' quits when there is nothing to type into; ctrl keys
+      // (run etc.) pass through; everything else is typed.
+      if (key.ctrl !== true && !(key.name === "q" && state.filter.length === 0)) return;
     }
 
     if (state.overlay === "help" || state.overlay === "report") {
@@ -995,7 +1035,6 @@ export async function runTuiApp(): Promise<number> {
         }
         return;
       case "?":
-      case "/":
         state.overlay = "help";
         render();
         return;
@@ -1061,7 +1100,7 @@ export async function runTuiApp(): Promise<number> {
       } else if (key.name === "up" || key.name === "k") {
         state.cursor = Math.max(0, state.cursor - 1);
         render();
-      } else if (key.name === "return" || key.name === "l" || key.name === "right") {
+      } else if (key.name === "return" || key.name === "enter" || key.name === "l" || key.name === "right") {
         if (row) enterRow(row);
       } else if (key.name === "h" || key.name === "left" || key.name === "backspace") {
         goParent();
@@ -1187,7 +1226,7 @@ export async function runTuiApp(): Promise<number> {
   });
 
   setFocus("files");
-  await loadDir(process.cwd());
+  const ready = loadDir(startDir);
 
   const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
   const check = setInterval(() => {
@@ -1196,7 +1235,21 @@ export async function runTuiApp(): Promise<number> {
       resolveExited(0);
     }
   }, 100);
-  return exited;
+
+  return {
+    exited,
+    ready: ready.then(() => undefined),
+    destroy: shutdown,
+  };
+}
+
+export async function runTuiApp(): Promise<number> {
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: false,
+    targetFps: 30,
+  });
+  const app = createTuiApp(renderer, process.cwd());
+  return app.exited;
 }
 
 // Keep the Renderable import meaningful for the child-tracking types above.

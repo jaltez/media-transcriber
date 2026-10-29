@@ -318,6 +318,7 @@ Available scripts:
 npm run dev        # tsup --watch
 npm run typecheck
 npm test
+npm run test:tui   # OpenTUI browser smoke (needs Bun for the test renderer)
 npm run build
 ```
 
