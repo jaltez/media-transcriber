@@ -157,12 +157,21 @@ export async function runTuiApp(): Promise<number> {
   const toastText = new TextRenderable(renderer, { content: "", fg: col(THEME.warn), flexGrow: 1 });
   header.add(toastText);
 
+  // Tabs are sized to their content: nothing stretches, no scroll arrows,
+  // and no full-width underline row — the active tab is highlighted by its
+  // own cell colors only.
   const tabs = new TabSelectRenderable(renderer, {
-    height: 2,
+    height: 1,
+    width: MODES.length * 14,
     options: MODES.map((mode) => ({ name: mode, description: "" })),
     showDescription: false,
+    showUnderline: false,
+    showScrollArrows: false,
+    wrapSelection: true,
     tabWidth: 14,
-    textColor: col(THEME.fg),
+    textColor: col(THEME.dim),
+    focusedTextColor: col(THEME.fg),
+    focusedBackgroundColor: col(THEME.selectedBg),
     selectedTextColor: col(THEME.accent),
     selectedBackgroundColor: col(THEME.selectedBg),
   });
@@ -729,7 +738,10 @@ export async function runTuiApp(): Promise<number> {
     // escape/tab and ctrl-modified globals pass through. The mode tabs
     // consume just arrows/enter, so every key stays global there.
     const filterFocused = state.focus === "files";
-    if (filterFocused && key.ctrl !== true && !["escape", "tab"].includes(key.name)) return;
+    if (filterFocused && key.ctrl !== true && !["escape", "tab"].includes(key.name)) {
+      // Bare 'q' still quits when there is nothing to type into.
+      if (!(key.name === "q" && state.filter.length === 0)) return;
+    }
 
     if (state.overlay === "help" || state.overlay === "report") {
       if (key.name === "escape" || key.name === "q") {
