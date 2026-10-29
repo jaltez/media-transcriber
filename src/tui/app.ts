@@ -196,6 +196,23 @@ export async function runTuiApp(): Promise<number> {
     state.mode = option.name as Mode;
     render();
   });
+  // Click a tab cell to switch modes directly (mouse control).
+  tabs.onMouseDown = (event) => {
+    const localX = event.x - tabs.x;
+    const index = Math.floor(localX / 14);
+    if (index >= 0 && index < MODES.length) {
+      state.mode = MODES[index]!;
+      render();
+    }
+  };
+  tabs.onMouseOver = () => {
+    renderer.setMousePointer("pointer");
+    renderer.requestRender();
+  };
+  tabs.onMouseOut = () => {
+    renderer.setMousePointer("default");
+    renderer.requestRender();
+  };
 
   const body = new BoxRenderable(renderer, { flexDirection: "row", flexGrow: 1 });
 
@@ -214,6 +231,29 @@ export async function runTuiApp(): Promise<number> {
   const listBox = new BoxRenderable(renderer, { flexDirection: "column", flexGrow: 1 });
   const filesFooter = new TextRenderable(renderer, { content: "", fg: col(THEME.dim) });
   filesBox.add(filterInput);
+
+  // Wheel scrolls the browser cursor; hovering the list shows a pointer.
+  listBox.onMouseScroll = (event) => {
+    const rows = listRows();
+    if (rows.length === 0) return;
+    const scroll = event.scroll;
+    if (!scroll) return;
+    const step = Math.max(1, scroll.delta);
+    if (scroll.direction === "up") {
+      state.cursor = Math.max(0, state.cursor - step);
+    } else if (scroll.direction === "down") {
+      state.cursor = Math.min(rows.length - 1, state.cursor + step);
+    }
+    render();
+  };
+  listBox.onMouseOver = () => {
+    renderer.setMousePointer("pointer");
+    renderer.requestRender();
+  };
+  listBox.onMouseOut = () => {
+    renderer.setMousePointer("default");
+    renderer.requestRender();
+  };
   filesBox.add(listBox);
   filesBox.add(filesFooter);
 
@@ -268,6 +308,20 @@ export async function runTuiApp(): Promise<number> {
   const formLines: TextRenderable[] = [];
   const runLines: TextRenderable[] = [];
   let overlayInput: InputRenderable | null = null;
+
+  // Wheel scrolls the report overlay while it is open.
+  overlayBox.onMouseScroll = (event) => {
+    if (state.overlay !== "report") return;
+    const scroll = event.scroll;
+    if (!scroll) return;
+    const step = Math.max(1, scroll.delta);
+    if (scroll.direction === "up") {
+      state.reportScroll = Math.max(0, state.reportScroll - step);
+    } else if (scroll.direction === "down") {
+      state.reportScroll += step;
+    }
+    render();
+  };
 
   function clearLines(box: BoxRenderable, lines: TextRenderable[]) {
     for (const line of lines.splice(0)) box.remove(line);
@@ -358,9 +412,19 @@ export async function runTuiApp(): Promise<number> {
         fg: col(fg),
         bg: isCursor ? col(THEME.selectedBg) : undefined,
       });
-      line.onMouseDown = () => {
+      line.onMouseDown = (event) => {
         state.cursor = absoluteIndex;
-        enterRow(row);
+        // Left-click: folders open, files stage/unstage. Right-click on a
+        // file unstages; on a folder it stages the folder recursively.
+        if (row.isDir) {
+          if (event.button === 2) void stageFolder(row.path);
+          else void loadDir(row.path);
+        } else if (event.button === 2) {
+          state.items = unstagePath(state.items, row.path);
+          render();
+        } else {
+          toggleRow(row);
+        }
       };
       listLines.push(line);
       listBox.add(line);
@@ -436,6 +500,27 @@ export async function runTuiApp(): Promise<number> {
     }
   }
 
+  /** Open the text-entry overlay for a form text row (keyboard return or click). */
+  function editFormText(row: FormRow) {
+    if (row.kind !== "text") return;
+    const initial = state.mode === "Transcribe"
+      ? row.label === "Model" ? state.transcribeForm.model
+        : row.label === "Output dir" ? state.transcribeForm.outputDir
+        : state.transcribeForm.splitThreshold
+      : state.enhanceForm.outputDir;
+    openInputOverlay(initial, row.label.toLowerCase(), (value) => {
+      if (state.mode === "Transcribe") {
+        const f = state.transcribeForm;
+        if (row.label === "Model") f.model = value;
+        else if (row.label === "Output dir") f.outputDir = value;
+        else f.splitThreshold = value;
+      } else {
+        state.enhanceForm.outputDir = value;
+      }
+      setFocus("form");
+    });
+  }
+
   function renderMain() {
     mainBox.title = state.mode.toLowerCase();
     clearLines(formBox, formLines);
@@ -471,6 +556,14 @@ export async function runTuiApp(): Promise<number> {
     });
     runHint.onMouseDown = () => {
       if (!state.running) void startRun();
+    };
+    runHint.onMouseOver = () => {
+      renderer.setMousePointer(state.running ? "default" : "pointer");
+      renderer.requestRender();
+    };
+    runHint.onMouseOut = () => {
+      renderer.setMousePointer("default");
+      renderer.requestRender();
     };
     formLines.push(runHint);
     formBox.add(runHint);
@@ -1027,24 +1120,7 @@ export async function runTuiApp(): Promise<number> {
         render();
       } else if (key.name === "return") {
         const row = rows[state.formRow]!;
-        if (row.kind === "text") {
-          const initial = state.mode === "Transcribe"
-            ? row.label === "Model" ? state.transcribeForm.model
-              : row.label === "Output dir" ? state.transcribeForm.outputDir
-              : state.transcribeForm.splitThreshold
-            : state.enhanceForm.outputDir;
-          openInputOverlay(initial, row.label.toLowerCase(), (value) => {
-            if (state.mode === "Transcribe") {
-              const f = state.transcribeForm;
-              if (row.label === "Model") f.model = value;
-              else if (row.label === "Output dir") f.outputDir = value;
-              else f.splitThreshold = value;
-            } else {
-              state.enhanceForm.outputDir = value;
-            }
-            setFocus("form");
-          });
-        }
+        if (row.kind === "text") editFormText(row);
       }
     }
   });
