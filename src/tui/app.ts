@@ -29,13 +29,15 @@ import {
 import { fuzzyFilter } from "./pure/fuzzy.js";
 import { parsePastedPaths } from "./pure/paste-paths.js";
 import {
-  buildQueue,
   displayName,
   formatBytes,
+  isSupportedMediaPath,
+  listDirectory,
+  queuePaths,
   scanMediaFiles,
-  selectAll,
-  selectedPaths,
-  toggleAt,
+  stageInto,
+  unstagePath,
+  type DirEntry,
   type QueueItem,
 } from "./pure/queue.js";
 
@@ -83,26 +85,37 @@ const STATUS_GLYPH: Record<QueueItem["status"], { glyph: string; color: string }
 const HELP_TEXT = [
   "media-transcriber TUI — keys",
   "",
-  "  tab        cycle focus (files → form → modes)",
-  "  1 / 2 / 3  switch Transcribe / Enhance / Doctor",
-  "  up / down  move in list or form",
-  "  space      toggle file selection      a  select all / none",
-  "  ← / →      change the focused form value",
-  "  return     edit a text field (model, output dir, split)",
-  "  esc        close overlay / leave a field",
-  "  r          run on selected files      g  rescan root",
-  "  d          change scan directory      p  stage from clipboard",
-  "  o          open output in system app  v  view enhancement report",
-  "  ctrl+r     run (works while typing in the filter)",
-  "  paste      dropped/pasted paths are staged automatically",
-  "  ?          this help                  q  quit",
+  "  Files browser",
+  "    ↑↓ / j k   move          enter / l → open folder",
+  "    h / ←      parent folder  g  reload directory",
+  "    space      stage file / stage folder (recursive)",
+  "    a          stage or clear all media in this folder",
+  "    t          show all files (media only by default)",
+  "    /          recursive fuzzy search   esc  back to browser",
+  "    d          go to any path (file stages, folder opens)",
+  "",
+  "  Main",
+  "    tab        cycle focus (files → form → modes)",
+  "    1 / 2 / 3  switch Transcribe / Enhance / Doctor",
+  "    ← / →      change the focused form value",
+  "    return     edit a text field · r / ctrl+r run staged files",
+  "    o          open output in system app",
+  "    v          view enhancement report of cursor file",
+  "    p          stage from clipboard · paste/drop also stages",
+  "    esc        close overlay · q quit (asks if a run is active)",
   "",
   "Runs execute the real CLI as a child process (--json).",
 ].join("\n");
 
 interface TuiState {
-  root: string;
+  cwd: string;
+  dirEntries: DirEntry[];
+  showAllFiles: boolean;
+  /** Filter input focused: list shows recursive fuzzy matches instead of cwd */
+  filterMode: boolean;
   filter: string;
+  /** Cached recursive scan of cwd, filled on first filter keystroke */
+  filterScan: string[] | null;
   items: QueueItem[];
   cursor: number;
   mode: Mode;
@@ -127,8 +140,12 @@ export async function runTuiApp(): Promise<number> {
   });
 
   const state: TuiState = {
-    root: process.cwd(),
+    cwd: process.cwd(),
+    dirEntries: [],
+    showAllFiles: false,
+    filterMode: false,
     filter: "",
+    filterScan: null,
     items: [],
     cursor: 0,
     mode: "Transcribe",
@@ -137,7 +154,7 @@ export async function runTuiApp(): Promise<number> {
     enhanceForm: { ...DEFAULT_ENHANCE_FORM },
     transcribeForm: { ...DEFAULT_TRANSCRIBE_FORM },
     running: false,
-    logs: ["Ready. Paste or drop files, or press d to set a scan directory."],
+    logs: ["Ready. Browse with ↑↓/enter, space stages a file or folder, / searches."],
     overlay: "none",
     reportText: "",
     reportScroll: 0,
@@ -191,7 +208,7 @@ export async function runTuiApp(): Promise<number> {
     titleColor: col(THEME.dim),
   });
   const filterInput = new InputRenderable(renderer, {
-    placeholder: "filter files…",
+    placeholder: "press / to search…",
     textColor: col(THEME.fg),
   });
   const listBox = new BoxRenderable(renderer, { flexDirection: "column", flexGrow: 1 });
@@ -259,15 +276,37 @@ export async function runTuiApp(): Promise<number> {
   // --- Derived helpers --------------------------------------------------------
   const listHeight = () => Math.max(4, renderer.height - 10);
 
-  function visibleItems(): QueueItem[] {
-    if (!state.filter) return state.items;
-    return fuzzyFilter(state.filter, state.items, (item) => item.path).map((s) => s.item);
+  /** What the list pane currently shows: dir entries, or recursive filter matches. */
+  interface ListRow {
+    label: string;
+    path: string;
+    isDir: boolean;
+    sizeBytes: number;
+    stagedItem?: QueueItem;
   }
 
-  function visibleIndexToMaster(visible: QueueItem[], index: number): number {
-    if (visible.length === 0) return -1;
-    const item = visible[Math.min(index, visible.length - 1)]!;
-    return state.items.indexOf(item);
+  function listRows(): ListRow[] {
+    if (state.filterMode && state.filter.length > 0) {
+      const scanned = state.filterScan ?? [];
+      return fuzzyFilter(state.filter, scanned, (path) => path).slice(0, 200).map((match) => ({
+        label: match.item,
+        path: match.item,
+        isDir: false,
+        sizeBytes: 0,
+        stagedItem: state.items.find((item) => item.path === match.item),
+      }));
+    }
+    return state.dirEntries.map((entry) => ({
+      label: entry.name,
+      path: entry.path,
+      isDir: entry.isDir,
+      sizeBytes: entry.sizeBytes,
+      stagedItem: state.items.find((item) => item.path === entry.path),
+    }));
+  }
+
+  function cursorRow(rows: ListRow[]): ListRow | undefined {
+    return rows[Math.min(state.cursor, rows.length - 1)];
   }
 
   // --- Rendering ---------------------------------------------------------------
@@ -282,48 +321,61 @@ export async function runTuiApp(): Promise<number> {
   }
 
   function renderList() {
-    const visible = visibleItems();
+    const rows = listRows();
     const height = listHeight();
 
-    if (state.cursor >= visible.length) state.cursor = Math.max(0, visible.length - 1);
+    if (state.cursor >= rows.length) state.cursor = Math.max(0, rows.length - 1);
     if (state.cursor < state.listWindowStart) state.listWindowStart = state.cursor;
     if (state.cursor >= state.listWindowStart + height) {
       state.listWindowStart = state.cursor - height + 1;
     }
 
     clearLines(listBox, listLines);
-    const slice = visible.slice(state.listWindowStart, state.listWindowStart + height);
-    slice.forEach((item, i) => {
+    const slice = rows.slice(state.listWindowStart, state.listWindowStart + height);
+    slice.forEach((row, i) => {
       const absoluteIndex = state.listWindowStart + i;
-      const isCursor = state.focus === "files" && absoluteIndex === state.cursor && visible.length > 0;
-      const status = STATUS_GLYPH[item.status];
-      const checkbox = item.selected ? "[✓]" : "[ ]";
+      const isCursor = state.focus === "files" && absoluteIndex === state.cursor && rows.length > 0;
+      let marker: string;
+      let fg: string;
+      let body: string;
+      if (row.isDir) {
+        marker = "▸";
+        body = `${row.label}/`;
+        fg = THEME.accent;
+      } else if (row.stagedItem) {
+        const status = STATUS_GLYPH[row.stagedItem.status];
+        marker = row.stagedItem.status === "pending" ? "✓" : status.glyph;
+        body = displayName(row.label, 24).padEnd(25) + formatBytes(row.stagedItem.sizeBytes).padStart(8);
+        fg = row.stagedItem.status === "pending" ? THEME.ok : status.color;
+      } else {
+        const supported = isSupportedMediaPath(row.path);
+        marker = supported ? "+" : "·";
+        body = displayName(row.label, 24).padEnd(25) + formatBytes(row.sizeBytes).padStart(8);
+        fg = supported ? THEME.fg : THEME.dim;
+      }
       const line = new TextRenderable(renderer, {
-        content: `${isCursor ? "❯" : " "}${checkbox}${status.glyph} ${displayName(item.path, 24).padEnd(25)}${formatBytes(item.sizeBytes).padStart(8)}`,
-        fg: col(item.status === "pending" ? THEME.fg : status.color),
+        content: `${isCursor ? "❯" : " "}${marker} ${body}`,
+        fg: col(fg),
         bg: isCursor ? col(THEME.selectedBg) : undefined,
       });
       line.onMouseDown = () => {
-        const masterIndex = visibleIndexToMaster(visible, absoluteIndex);
-        if (masterIndex >= 0) {
-          state.items = toggleAt(state.items, masterIndex);
-          render();
-        }
+        state.cursor = absoluteIndex;
+        enterRow(row);
       };
       listLines.push(line);
       listBox.add(line);
     });
-    if (visible.length === 0) {
-      const empty = new TextRenderable(renderer, {
-        content: state.filter ? "(no matches)" : "(no media files — paste paths or press d)",
-        fg: col(THEME.dim),
-      });
+    if (rows.length === 0) {
+      const message = state.filterMode && state.filter
+        ? "(no matches)"
+        : state.showAllFiles ? "(empty directory)" : "(no media files here — t shows all files)";
+      const empty = new TextRenderable(renderer, { content: message, fg: col(THEME.dim) });
       listLines.push(empty);
       listBox.add(empty);
     }
 
-    const selectedCount = state.items.filter((item) => item.selected).length;
-    filesFooter.content = ` ${selectedCount}/${state.items.length} selected · ${state.root}`.slice(0, 36);
+    const cwdLabel = state.filterMode && state.filter ? `search: ${state.cwd}` : state.cwd;
+    filesFooter.content = ` ${state.items.length} staged · ${cwdLabel}`.slice(0, 36);
   }
 
   interface FormRow {
@@ -414,7 +466,7 @@ export async function runTuiApp(): Promise<number> {
     const runHint = new TextRenderable(renderer, {
       content: state.running
         ? `Running… (${state.logs.length} events)`
-        : `r: run on ${selectedPaths(state.items).length} selected file(s)`,
+        : `r: run on ${state.items.length} staged file(s)`,
       fg: col(state.running ? THEME.warn : THEME.accent),
     });
     runHint.onMouseDown = () => {
@@ -436,7 +488,7 @@ export async function runTuiApp(): Promise<number> {
   }
 
   function renderFooter() {
-    footer.content = ` tab:focus(${state.focus})  space:select  r:run  ?:help  q:quit${state.running ? "  (run active)" : ""}`;
+    footer.content = ` tab:focus(${state.focus})  enter:open  space:stage  /:search  r:run  ?:help  q:quit${state.running ? "  (run active)" : ""}`;
   }
 
   function closeOverlayInput() {
@@ -482,28 +534,69 @@ export async function runTuiApp(): Promise<number> {
     state.logs.push(line.slice(0, 200));
     if (state.logs.length > 400) state.logs.splice(0, state.logs.length - 400);
   }
-
-  // --- Queue staging ---------------------------------------------------------------
+  // --- Browser navigation + staging -----------------------------------------------
   function stagePaths(paths: string[]): number {
-    const known = new Set(state.items.map((item) => item.path));
-    const fresh = paths.filter((path) => !known.has(path));
-    if (fresh.length > 0) {
-      void buildQueue(fresh, true).then((items) => {
-        state.items = [...state.items, ...items];
-        render();
-      });
-    }
-    return fresh.length;
+    const result = stageInto(state.items, paths);
+    state.items = result.items;
+    return result.added.length;
   }
 
-  async function rescan(rootDir = state.root) {
-    const paths = await scanMediaFiles(rootDir);
-    state.root = rootDir;
-    const byPath = new Map(state.items.map((item) => [item.path, item]));
-    state.items = await buildQueue(paths, true);
-    state.items = state.items.map((item) => byPath.get(item.path) ?? item);
+  async function stageFolder(dir: string) {
+    const paths = await scanMediaFiles(dir);
+    const added = stagePaths(paths);
+    toast(added > 0 ? `+${added} staged from ${basename(dir)}` : "no new media files there");
+    render();
+  }
+
+  async function loadDir(dir: string) {
+    state.cwd = resolve(dir);
+    state.dirEntries = await listDirectory(state.cwd, state.showAllFiles);
+    state.filterScan = null;
+    state.filter = "";
+    filterInput.value = "";
+    state.filterMode = false;
     state.cursor = 0;
     state.listWindowStart = 0;
+    render();
+  }
+
+  function enterRow(row: ListRow) {
+    if (row.isDir) {
+      void loadDir(row.path);
+    } else if (row.stagedItem) {
+      // Already staged: no-op on enter; space unstages.
+    } else if (isSupportedMediaPath(row.path)) {
+      stagePaths([row.path]);
+      toast(`+1 staged: ${row.label}`);
+      render();
+    } else {
+      toast("Unsupported format (media files only)");
+    }
+  }
+
+  function toggleRow(row: ListRow) {
+    if (row.isDir) {
+      void stageFolder(row.path);
+    } else if (row.stagedItem) {
+      state.items = unstagePath(state.items, row.path);
+      render();
+    } else if (isSupportedMediaPath(row.path)) {
+      stagePaths([row.path]);
+      render();
+    } else {
+      toast("Unsupported format (media files only)");
+    }
+  }
+
+  function goParent() {
+    const parent = dirname(state.cwd);
+    if (parent !== state.cwd) void loadDir(parent);
+  }
+
+  async function refreshFilterScan() {
+    if (state.filterScan === null) {
+      state.filterScan = await scanMediaFiles(state.cwd);
+    }
     render();
   }
 
@@ -513,13 +606,29 @@ export async function runTuiApp(): Promise<number> {
     stdout: string;
   }
 
+  /**
+   * CLI children run under Node when available: execa's early-error path is
+   * broken under Bun (createDummyStreams assigns to a readonly property), and
+   * Node is the CLI's supported runtime anyway.
+   */
+  function cliRuntime(): { command: string; prefix: string[] } {
+    if (!process.versions.bun) return { command: process.execPath, prefix: [] };
+    for (const dir of (process.env.PATH ?? "").split(process.platform === "win32" ? ";" : ":")) {
+      if (!dir) continue;
+      const exe = process.platform === "win32" ? "node.exe" : "node";
+      const candidate = `${dir}${dir.endsWith("/") ? "" : "/"}${exe}`;
+      if (existsSync(candidate)) return { command: candidate, prefix: [] };
+    }
+    return { command: process.execPath, prefix: [] };
+  }
+
   function spawnCli(args: string[]): Promise<ChildResult> {
     const entry = process.argv[1]!;
-    const active = spawn(process.execPath, [entry, ...args], {
+    const runtime = cliRuntime();
+    const active = spawn(runtime.command, [...runtime.prefix, entry, ...args], {
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    child = active;
     let stdout = "";
     let stderrBuffer = "";
     const { promise, resolve: resolveResult } = Promise.withResolvers<ChildResult>();
@@ -558,7 +667,7 @@ export async function runTuiApp(): Promise<number> {
       render();
       return;
     }
-    const targets = selectedPaths(state.items);
+    const targets = queuePaths(state.items);
     if (targets.length === 0) {
       toast("No files selected");
       return;
@@ -701,14 +810,15 @@ export async function runTuiApp(): Promise<number> {
     state.filter = value;
     state.cursor = 0;
     state.listWindowStart = 0;
-    render();
+    void refreshFilterScan();
   });
 
   function setFocus(focus: TuiState["focus"]) {
     state.focus = focus;
-    if (focus === "files") filterInput.focus();
-    else if (focus === "modes") tabs.focus();
-    else filterInput.blur();
+    // "files" means the browser list owns keys; the filter input is only
+    // focused while filter mode is active (entered with '/').
+    if (focus === "modes") tabs.focus();
+    else if (!state.filterMode) filterInput.blur();
     render();
   }
 
@@ -737,7 +847,7 @@ export async function runTuiApp(): Promise<number> {
     // While the filter input holds focus, letters must type into it; only
     // escape/tab and ctrl-modified globals pass through. The mode tabs
     // consume just arrows/enter, so every key stays global there.
-    const filterFocused = state.focus === "files";
+    const filterFocused = state.focus === "files" && state.filterMode;
     if (filterFocused && key.ctrl !== true && !["escape", "tab"].includes(key.name)) {
       // Bare 'q' still quits when there is nothing to type into.
       if (!(key.name === "q" && state.filter.length === 0)) return;
@@ -808,14 +918,21 @@ export async function runTuiApp(): Promise<number> {
         if (!state.running) void startRun();
         return;
       case "g":
-        void rescan();
+        void loadDir(state.cwd);
         return;
       case "d":
         if (!state.running) {
-          openInputOverlay("", "scan directory…", (value) => {
+          openInputOverlay("", "go to directory or file…", (value) => {
             const target = resolve(value.trim() || ".");
-            if (existsSync(target)) void rescan(target);
-            else toast(`No such directory: ${target}`);
+            if (!existsSync(target)) {
+              toast(`No such path: ${target}`);
+            } else if (statSync(target).isDirectory()) {
+              void loadDir(target);
+            } else {
+              stagePaths([target]);
+              toast(`+1 staged: ${basename(target)}`);
+              render();
+            }
           });
         }
         return;
@@ -823,40 +940,72 @@ export async function runTuiApp(): Promise<number> {
         void stageFromClipboard();
         return;
       case "o": {
-        const masterIndex = visibleIndexToMaster(visibleItems(), state.cursor);
-        if (masterIndex >= 0) {
-          const item = state.items[masterIndex]!;
-          if (item.output) openInSystemApp(item.output);
-          else toast("No output yet — run first");
-        }
+        const row = cursorRow(listRows());
+        if (row?.stagedItem?.output) openInSystemApp(row.stagedItem.output);
+        else toast("No output yet — run first");
         return;
       }
       case "v": {
-        const masterIndex = visibleIndexToMaster(visibleItems(), state.cursor);
-        if (masterIndex >= 0) void showReport(masterIndex);
+        const row = cursorRow(listRows());
+        if (row?.stagedItem) {
+          const masterIndex = state.items.findIndex((item) => item.path === row.stagedItem!.path);
+          if (masterIndex >= 0) void showReport(masterIndex);
+        } else {
+          toast("Stage the file first (space)");
+        }
         return;
       }
       default:
         break;
     }
 
-    if (state.focus === "files") {
-      const visible = visibleItems();
+    if (state.focus === "files" && !state.filterMode) {
+      const rows = listRows();
+      const row = cursorRow(rows);
       if (key.name === "down" || key.name === "j") {
-        state.cursor = Math.min(visible.length - 1, state.cursor + 1);
+        state.cursor = Math.min(rows.length - 1, state.cursor + 1);
         render();
       } else if (key.name === "up" || key.name === "k") {
         state.cursor = Math.max(0, state.cursor - 1);
         render();
+      } else if (key.name === "return" || key.name === "l" || key.name === "right") {
+        if (row) enterRow(row);
+      } else if (key.name === "h" || key.name === "left" || key.name === "backspace") {
+        goParent();
       } else if (key.name === "space") {
-        const masterIndex = visibleIndexToMaster(visible, state.cursor);
-        if (masterIndex >= 0) {
-          state.items = toggleAt(state.items, masterIndex);
-          render();
-        }
+        if (row) toggleRow(row);
       } else if (key.name === "a") {
-        const anyUnselected = state.items.some((item) => !item.selected);
-        state.items = selectAll(state.items, anyUnselected);
+        // Stage (or clear) every visible media file in the current directory.
+        const mediaRows = state.dirEntries.filter((entry) => !entry.isDir && entry.supported);
+        const stagedPaths = new Set(state.items.map((item) => item.path));
+        const allStaged = mediaRows.every((entry) => stagedPaths.has(entry.path));
+        if (allStaged) {
+          for (const entry of mediaRows) state.items = unstagePath(state.items, entry.path);
+          toast("cleared this directory");
+        } else {
+          const added = stagePaths(mediaRows.map((entry) => entry.path));
+          toast(`+${added} staged`);
+        }
+        render();
+      } else if (key.name === "t") {
+        state.showAllFiles = !state.showAllFiles;
+        void loadDir(state.cwd);
+      } else if (key.name === "/") {
+        state.filterMode = true;
+        filterInput.focus();
+        void refreshFilterScan();
+      }
+      return;
+    }
+
+    if (state.focus === "files" && state.filterMode) {
+      // Filter input holds focus; navigation resumes on escape.
+      if (key.name === "escape") {
+        state.filter = "";
+        filterInput.value = "";
+        state.filterMode = false;
+        state.cursor = 0;
+        state.listWindowStart = 0;
         render();
       }
       return;
@@ -933,8 +1082,8 @@ export async function runTuiApp(): Promise<number> {
     });
     const staged = stagePaths(parsed.files);
     if (parsed.dirs.length > 0 && existsSync(parsed.dirs[0]!)) {
-      void rescan(parsed.dirs[0]!);
-      toast(`Scanning ${parsed.dirs[0]!}${staged ? ` (+${staged} staged)` : ""}`);
+      void loadDir(parsed.dirs[0]!);
+      toast(`Browsing ${parsed.dirs[0]!}${staged ? ` (+${staged} staged)` : ""}`);
       return;
     }
     const parts: string[] = [];
@@ -962,7 +1111,7 @@ export async function runTuiApp(): Promise<number> {
   });
 
   setFocus("files");
-  await rescan();
+  await loadDir(process.cwd());
 
   const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
   const check = setInterval(() => {

@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { fuzzyFilter, fuzzyScore } from "./fuzzy.js";
 import { parsePastedPaths, splitPathTokens } from "./paste-paths.js";
 import {
@@ -9,7 +12,13 @@ import {
   describeProgressEvent,
   parseProgressLine,
 } from "./args.js";
-import { buildQueue, formatBytes, selectAll, selectedPaths, toggleAt } from "./queue.js";
+import {
+  formatBytes,
+  listDirectory,
+  queuePaths,
+  stageInto,
+  unstagePath,
+} from "./queue.js";
 
 describe("fuzzyScore", () => {
   it("matches subsequences case-insensitively and rejects non-subsequences", () => {
@@ -136,19 +145,46 @@ describe("parseProgressLine / describeProgressEvent", () => {
 });
 
 describe("queue helpers", () => {
-  it("toggles, selects all, and lists selected paths", async () => {
-    let items = await buildQueue(["/a.wav", "/b.wav"]);
-    expect(items.map((i) => i.selected)).toEqual([true, true]);
-    items = toggleAt(items, 0);
-    expect(items[0]!.selected).toBe(false);
-    expect(selectedPaths(items)).toEqual(["/b.wav"]);
-    items = selectAll(items, false);
-    expect(selectedPaths(items)).toEqual([]);
+  it("stages paths deduped and unstages by path", () => {
+    const first = stageInto([], ["/a.wav", "/b.wav"]);
+    expect(queuePaths(first.items)).toEqual(["/a.wav", "/b.wav"]);
+    const again = stageInto(first.items, ["/a.wav", "/c.wav"]);
+    expect(again.added).toEqual(["/c.wav"]);
+    expect(queuePaths(again.items)).toEqual(["/a.wav", "/b.wav", "/c.wav"]);
+    const items = unstagePath(again.items, "/b.wav");
+    expect(queuePaths(items)).toEqual(["/a.wav", "/c.wav"]);
+    // Running items cannot be unstaged
+    const running = again.items.map((item) =>
+      item.path === "/a.wav" ? { ...item, status: "running" as const } : item,
+    );
+    expect(unstagePath(running, "/a.wav").some((item) => item.path === "/a.wav")).toBe(true);
   });
 
   it("formats byte sizes for display", () => {
-    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(0)).toBe("");
     expect(formatBytes(2048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+});
+
+describe("listDirectory", () => {
+  it("lists folders first, media by default, all files on request", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mt-listdir-"));
+    try {
+      await writeFile(join(dir, "b.mp3"), "x");
+      await writeFile(join(dir, "a.txt"), "x");
+      await mkdir(join(dir, "sub"));
+
+      const media = await listDirectory(dir, false);
+      expect(media.map((e) => e.name)).toEqual(["sub", "b.mp3"]);
+      expect(media[0]!.isDir).toBe(true);
+      expect(media[1]!.supported).toBe(true);
+
+      const all = await listDirectory(dir, true);
+      expect(all.map((e) => e.name)).toEqual(["sub", "a.txt", "b.mp3"]);
+      expect(all.find((e) => e.name === "a.txt")!.supported).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
