@@ -52,6 +52,9 @@
     "picocolors": "^1.1.0",
     "zod": "^3.24.0"
   },
+  "optionalDependencies": {
+    "@opentui/core": "^0.5.10"
+  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsup": "^8.0.0",
