@@ -204,6 +204,8 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     selectedBackgroundColor: col(THEME.selectedBg),
   });
   tabs.on(TabSelectRenderableEvents.ITEM_SELECTED, (_index, option) => {
+    // A run reads state.mode per file; freeze the mode while it is active.
+    if (state.running) return;
     state.mode = option.name as Mode;
     render();
   });
@@ -211,7 +213,7 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   tabs.onMouseDown = (event) => {
     const localX = event.x - tabs.x;
     const index = Math.floor(localX / 14);
-    if (index >= 0 && index < MODES.length) {
+    if (index >= 0 && index < MODES.length && !state.running) {
       state.mode = MODES[index]!;
       render();
     }
@@ -703,9 +705,21 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     if (parent !== state.cwd) void loadDir(parent);
   }
 
+  // One in-flight scan per directory: rapid keystrokes reuse it, and a scan
+  // started in another directory never lands as the current listing.
+  let filterScanInFlight: { cwd: string; promise: Promise<string[]> } | null = null;
   async function refreshFilterScan() {
     if (state.filterScan === null) {
-      state.filterScan = await scanMediaFiles(state.cwd);
+      if (filterScanInFlight?.cwd !== state.cwd) {
+        filterScanInFlight = { cwd: state.cwd, promise: scanMediaFiles(state.cwd) };
+      }
+      const { cwd, promise } = filterScanInFlight!;
+      try {
+        const files = await promise;
+        if (state.cwd === cwd && state.filterScan === null) state.filterScan = files;
+      } finally {
+        if (filterScanInFlight?.promise === promise) filterScanInFlight = null;
+      }
     }
     render();
   }
@@ -739,6 +753,8 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    // Tracked so quit-during-run and shutdown can kill the run (SIGTERM).
+    child = active;
     let stdout = "";
     let stderrBuffer = "";
     const { promise, resolve: resolveResult } = Promise.withResolvers<ChildResult>();
@@ -943,7 +959,9 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     const input = overlayInput;
     overlayBox.add(input);
     state.overlay = "input";
-    input.focus();
+    // Focus after the current key dispatch so the opening key ('d') is not
+    // typed into the fresh input.
+    queueMicrotask(() => input.focus());
     input.on(InputRenderableEvents.ENTER, (value: string) => {
       closeOverlayInput();
       state.overlay = "none";
@@ -1011,6 +1029,18 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       }
       return;
     }
+    if (state.overlay === "input") {
+      // The overlay input owns typing. Global listeners run before the
+      // focused renderable, so without this guard every letter would also
+      // reach the main switch (typing "quiet" would quit on 'q').
+      if (key.name === "escape") {
+        closeOverlayInput();
+        state.overlay = "none";
+        render();
+      }
+      return;
+    }
+
 
     switch (key.name) {
       case "tab":
@@ -1055,7 +1085,8 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       case "d":
         if (!state.running) {
           openInputOverlay("", "go to directory or file…", (value) => {
-            const target = resolve(value.trim() || ".");
+            // Relative paths answer to the directory being browsed, not the launch cwd.
+            const target = resolve(state.cwd, value.trim() || ".");
             if (!existsSync(target)) {
               toast(`No such path: ${target}`);
             } else if (statSync(target).isDirectory()) {
@@ -1129,20 +1160,6 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       }
       return;
     }
-
-    if (state.focus === "files" && state.filterMode) {
-      // Filter input holds focus; navigation resumes on escape.
-      if (key.name === "escape") {
-        state.filter = "";
-        filterInput.value = "";
-        state.filterMode = false;
-        state.cursor = 0;
-        state.listWindowStart = 0;
-        render();
-      }
-      return;
-    }
-
     if (state.focus === "form") {
       const rows = formRows();
       if (key.name === "down" || key.name === "j") {

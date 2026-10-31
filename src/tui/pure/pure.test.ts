@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fuzzyFilter, fuzzyScore } from "./fuzzy.js";
@@ -15,6 +15,7 @@ import {
 import {
   formatBytes,
   listDirectory,
+  scanMediaFiles,
   queuePaths,
   stageInto,
   unstagePath,
@@ -183,6 +184,56 @@ describe("listDirectory", () => {
       const all = await listDirectory(dir, true);
       expect(all.map((e) => e.name)).toEqual(["sub", "a.txt", "b.mp3"]);
       expect(all.find((e) => e.name === "a.txt")!.supported).toBe(false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a symlinked directory as a folder and skips broken links", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mt-listdir-link-"));
+    try {
+      await mkdir(join(dir, "real"));
+      await symlink(join(dir, "real"), join(dir, "shortcut"));
+      await symlink(join(dir, "nowhere"), join(dir, "broken"));
+
+      const entries = await listDirectory(dir, false);
+      expect(entries.map((e) => e.name)).toEqual(["real", "shortcut"]);
+      expect(entries.every((e) => e.isDir)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scanMediaFiles", () => {
+  it("reaches media behind symlinked directories and files", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mt-scan-"));
+    try {
+      await mkdir(join(dir, "linked", "inner"), { recursive: true });
+      await writeFile(join(dir, "linked", "inner", "a.wav"), "x");
+      await writeFile(join(dir, "linked", "b.mp3"), "x");
+      await symlink(join(dir, "linked"), join(dir, "library"));
+      await symlink(join(dir, "linked", "b.mp3"), join(dir, "alias.mp3"));
+
+      const found = await scanMediaFiles(dir);
+      expect(found).toContain(join(dir, "library", "inner", "a.wav"));
+      expect(found).toContain(join(dir, "library", "b.mp3"));
+      expect(found).toContain(join(dir, "alias.mp3"));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("stops at the depth bound and ignores broken symlinks", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mt-scan-depth-"));
+    try {
+      let deep = dir;
+      for (let i = 0; i < 8; i += 1) deep = join(deep, `d${i}`);
+      await mkdir(deep, { recursive: true });
+      await writeFile(join(deep, "too-deep.mp3"), "x");
+      await symlink(join(dir, "missing"), join(dir, "broken"));
+
+      expect(await scanMediaFiles(dir)).toEqual([]);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

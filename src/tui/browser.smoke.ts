@@ -39,7 +39,10 @@ await writeFile(join(deep, "nested.mp3"), "x");
 
 const setup = await createTestRenderer({ width: 100, height: 30 });
 const app = createTuiApp(setup.renderer, dir);
-await app.ready;
+let exitedEarly = false;
+app.exited.then(() => {
+  exitedEarly = true;
+});
 const frame = () => setup.captureCharFrame();
 // fs-backed state changes (loadDir, scans, staging) settle asynchronously;
 // give them a beat before capturing a frame.
@@ -86,7 +89,7 @@ try {
   await setup.mockInput.typeText("qqq");
   await settle();
   f = frame();
-  check("'q' types into search instead of quitting", !f.includes("TUI — keys"));
+  check("'q' types into search without quitting the app", !exitedEarly && f.includes("q:quit"));
 
   // 5. escape exits search back to the browser.
   await setup.mockInput.pressKey(KeyCodes.ESCAPE);
@@ -108,7 +111,30 @@ try {
   f = frame();
   check("space on a folder stages it recursively", f.includes("2 staged"));
 
-  // 8. tab exits filter/search focus; q with an empty filter quits.
+  // 8. 'd' overlay: typing must not fire global hotkeys (q quits, r runs).
+  await setup.mockInput.pressKey("d");
+  await settle();
+  await setup.mockInput.typeText("quiet recordings");
+  await settle();
+  f = frame();
+  check("'d' overlay typing does not quit or run", !exitedEarly && f.includes("quiet recordings"));
+  await setup.mockInput.pressKey(KeyCodes.ESCAPE);
+  await settle();
+  f = frame();
+  check("escape closes the 'd' overlay without submitting", !f.includes("quiet recordings"));
+
+  // 9. 'd' resolves relative paths against the browsed directory.
+  await setup.mockInput.pressKey(KeyCodes.RETURN); // cursor on sub/
+  await settle();
+  await setup.mockInput.pressKey("d");
+  await settle();
+  await setup.mockInput.typeText("deep");
+  await setup.mockInput.pressKey(KeyCodes.RETURN);
+  await settle();
+  f = frame();
+  check("'d' jumps relative to the browsed folder", f.includes("nested.mp3"));
+
+  // 10. final escape; teardown below (app still running normally).
   await setup.mockInput.pressKey(KeyCodes.ESCAPE);
   await setup.renderOnce();
 } finally {

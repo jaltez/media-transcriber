@@ -1,6 +1,6 @@
+import { existsSync, statSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join, basename } from "node:path";
-import { existsSync } from "node:fs";
 import { SUPPORTED_EXTENSIONS } from "../../types/index.js";
 
 /**
@@ -51,7 +51,16 @@ export async function listDirectory(dir: string, allFiles: boolean): Promise<Dir
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue;
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
+    // Symlinks take their target's kind (media libraries often sit behind links).
+    let isDir = entry.isDirectory();
+    if (entry.isSymbolicLink()) {
+      try {
+        isDir = statSync(path).isDirectory();
+      } catch {
+        continue; // broken link
+      }
+    }
+    if (isDir) {
       dirs.push({ name: entry.name, path, isDir: true, sizeBytes: 0, supported: false });
     } else if (entry.isFile() || entry.isSymbolicLink()) {
       if (!allFiles && !isSupportedMediaPath(path)) continue;
@@ -91,9 +100,18 @@ export async function scanMediaFiles(root: string): Promise<string[]> {
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       const fullPath = join(dir, entry.name);
-      if (entry.isDirectory()) {
+      // Symlinks take their target's kind so linked media trees are reachable.
+      let isDir = entry.isDirectory();
+      if (entry.isSymbolicLink()) {
+        try {
+          isDir = statSync(fullPath).isDirectory();
+        } catch {
+          continue; // broken link
+        }
+      }
+      if (isDir) {
         await walk(fullPath, depth + 1);
-      } else if (entry.isFile() && isSupportedMediaPath(fullPath)) {
+      } else if ((entry.isFile() || entry.isSymbolicLink()) && isSupportedMediaPath(fullPath)) {
         files.push(fullPath);
       }
     }
@@ -101,20 +119,6 @@ export async function scanMediaFiles(root: string): Promise<string[]> {
 
   await walk(root, 0);
   return files.sort();
-}
-
-export async function buildQueue(paths: string[]): Promise<QueueItem[]> {
-  const items: QueueItem[] = [];
-  for (const path of paths) {
-    let sizeBytes = 0;
-    try {
-      sizeBytes = (await stat(path)).size;
-    } catch {
-      // Unreadable size is cosmetic; keep the item.
-    }
-    items.push({ path, sizeBytes, status: "pending" });
-  }
-  return items;
 }
 
 /** Merge new paths into the queue, skipping ones already staged. */
