@@ -9,8 +9,10 @@ import {
   buildEnhanceArgs,
   buildTranscribeArgs,
   DEFAULT_TRANSCRIBE_FORM,
+  enhancementReportPath,
   describeProgressEvent,
   parseProgressLine,
+  parseRunOutcome,
 } from "./args.js";
 import {
   formatBytes,
@@ -92,6 +94,7 @@ describe("buildTranscribeArgs", () => {
         preset: "fast",
         formats: "srt",
         outputDir: "/out",
+        allowUpload: true,
         enhancer: "deepfilternet",
         enhanceProfile: "master",
         splitThreshold: "600",
@@ -108,6 +111,7 @@ describe("buildTranscribeArgs", () => {
       "--enhance", "deepfilternet",
       "--enhance-profile", "master",
       "--split-threshold", "600",
+      "--allow-upload",
     ]);
   });
 
@@ -120,13 +124,68 @@ describe("buildTranscribeArgs", () => {
 describe("buildEnhanceArgs / buildDoctorArgs", () => {
   it("builds enhance args with engine, profile, report, and output", () => {
     expect(buildEnhanceArgs(
-      { enhancer: "deepfilternet", profile: "asr", outputDir: "/o", report: true },
+      { enhancer: "deepfilternet", profile: "asr", outputDir: "/o", report: true, allowUpload: false },
       "/in/a.wav",
     )).toEqual(["enhance", "/in/a.wav", "--json", "--enhancer", "deepfilternet", "--enhance-profile", "asr", "--report", "/o"]);
   });
 
   it("doctor runs all backends in json mode", () => {
     expect(buildDoctorArgs()).toEqual(["doctor", "--all", "--json"]);
+  });
+});
+
+describe("allow-upload consent", () => {
+  it("is omitted unless explicitly consented", () => {
+    expect(buildEnhanceArgs(
+      { enhancer: "unise", profile: "master", outputDir: "", report: false, allowUpload: false },
+      "/in/a.wav",
+    )).not.toContain("--allow-upload");
+    expect(buildEnhanceArgs(
+      { enhancer: "unise", profile: "master", outputDir: "", report: false, allowUpload: true },
+      "/in/a.wav",
+    )).toContain("--allow-upload");
+    expect(buildTranscribeArgs({ ...DEFAULT_TRANSCRIBE_FORM, enhancer: "unise", allowUpload: true }, "/in/a.wav")).toContain("--allow-upload");
+    expect(buildTranscribeArgs({ ...DEFAULT_TRANSCRIBE_FORM, enhancer: "unise" }, "/in/a.wav")).not.toContain("--allow-upload");
+  });
+});
+
+describe("parseRunOutcome", () => {
+  it("reads the config-error envelope the CLI prints instead of files[]", () => {
+    const outcome = parseRunOutcome(
+      JSON.stringify({ error: "config_error", message: "Enhancer 'UniSE' uploads audio to a remote service. Pass --allow-upload to consent." }),
+    );
+    expect(outcome).toEqual({
+      success: false,
+      error: "Enhancer 'UniSE' uploads audio to a remote service. Pass --allow-upload to consent.",
+    });
+  });
+
+  it("falls back to the error code when no message is present", () => {
+    expect(parseRunOutcome('{"error":"missing_dependency"}')).toEqual({ success: false, error: "missing_dependency" });
+  });
+
+  it("surfaces per-file failures and enhancement report paths", () => {
+    expect(parseRunOutcome('{"files":[{"success":false,"error":"whisper failed"}]}')).toEqual({
+      success: false,
+      error: "whisper failed",
+    });
+    const ok = parseRunOutcome(
+      '{"files":[{"success":true,"enhancement":{"outputFile":"/o/clip_enhanced.wav"}}]}',
+    );
+    expect(ok).toEqual({
+      success: true,
+      output: "/o/clip_enhanced.wav",
+      reportPath: "/o/clip_enhancement.json",
+    });
+  });
+
+  it("rejects non-JSON child output", () => {
+    expect(parseRunOutcome("ffmpeg died")).toEqual({ success: false, error: "unreadable child output" });
+  });
+
+  it("derives report paths for any extension, or none", () => {
+    expect(enhancementReportPath("/o/a_enhanced.flac")).toBe("/o/a_enhancement.json");
+    expect(enhancementReportPath("/o/b_enhanced")).toBe("/o/b_enhancement.json");
   });
 });
 
@@ -159,6 +218,12 @@ describe("queue helpers", () => {
       item.path === "/a.wav" ? { ...item, status: "running" as const } : item,
     );
     expect(unstagePath(running, "/a.wav").some((item) => item.path === "/a.wav")).toBe(true);
+  });
+
+  it("carries sizes through the sizeOf resolver", () => {
+    const sizes = new Map([["/a.wav", 10], ["/b.wav", 2048]]);
+    const { items } = stageInto([], ["/a.wav", "/b.wav", "/gone.wav"], (path) => sizes.get(path) ?? 0);
+    expect(items.map((item) => item.sizeBytes)).toEqual([10, 2048, 0]);
   });
 
   it("formats byte sizes for display", () => {

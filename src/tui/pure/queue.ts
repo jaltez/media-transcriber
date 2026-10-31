@@ -121,12 +121,20 @@ export async function scanMediaFiles(root: string): Promise<string[]> {
   return files.sort();
 }
 
-/** Merge new paths into the queue, skipping ones already staged. */
-export function stageInto(items: QueueItem[], paths: string[]): { items: QueueItem[]; added: string[] } {
+/** Merge new paths into the queue, skipping ones already staged. sizeOf feeds
+ * the size column (0 when unknown is fine — it is cosmetic). */
+export function stageInto(
+  items: QueueItem[],
+  paths: string[],
+  sizeOf: (path: string) => number = () => 0,
+): { items: QueueItem[]; added: string[] } {
   const known = new Set(items.map((item) => item.path));
   const added = paths.filter((path) => !known.has(path));
   if (added.length === 0) return { items, added };
-  return { items: [...items, ...added.map((path) => ({ path, sizeBytes: 0, status: "pending" as const }))], added };
+  return {
+    items: [...items, ...added.map((path) => ({ path, sizeBytes: sizeOf(path), status: "pending" as const }))],
+    added,
+  };
 }
 
 /** Remove a staged path from the queue (keeps running items). */

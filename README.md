@@ -203,7 +203,8 @@ Standalone enhancement: produce cleaned audio without transcribing, e.g. to audi
 Interactive terminal UI (OpenTUI). Runs everything the CLI runs by executing the real CLI as a child process and streaming its `--json` progress events.
 
 - Left pane: **file browser** — navigate folders (enter/`l` in, `h` out), folders listed first with media files only by default (`t` shows all files); `space` stages a file or a whole folder, `a` stages/clears the folder's media, `/` runs a recursive fuzzy search; **drag & drop or paste file/folder paths** to stage or navigate
-- Main pane: Transcribe (backend, model, preset, formats, output dir, enhancement engine + profile, split), Enhance (engine, profile, report), Doctor (live readiness panel)
+- Main pane: Transcribe (backend, model, preset, formats, output dir, enhancement engine + profile, split), Enhance (engine, profile, report), Doctor (live readiness panel). Remote engines (`unise`) add an **Allow upload** consent toggle (`--allow-upload`); running `unise` without consent fails with the CLI's own message shown next to the run hint
+- Rows keep their size when staged and show ✓/▶/✗ status; a failed row's error appears under the run hint when the cursor is on it
 - `o` opens a finished output in your system app, `v` views an enhancement report, `?` shows all keys; quitting mid-run asks before killing the child process
 
 ```bash

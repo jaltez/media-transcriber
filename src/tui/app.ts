@@ -24,6 +24,7 @@ import {
   buildTranscribeArgs,
   describeProgressEvent,
   parseProgressLine,
+  parseRunOutcome,
   type EnhanceForm,
   type TranscribeForm,
 } from "./pure/args.js";
@@ -102,7 +103,8 @@ const HELP_TEXT = [
   "    return     edit a text field · r / ctrl+r run staged files",
   "    o          open output in system app",
   "    v          view enhancement report of cursor file",
-  "    p          stage from clipboard · paste/drop also stages",
+  "    unise adds an 'Allow upload' consent row (remote engine);",
+  "    a failed file's error shows under the run hint (✗ rows)",
   "    esc        close overlay · q quit (asks if a run is active)",
   "",
   "Runs execute the real CLI as a child process (--json).",
@@ -331,7 +333,7 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     if (scroll.direction === "up") {
       state.reportScroll = Math.max(0, state.reportScroll - step);
     } else if (scroll.direction === "down") {
-      state.reportScroll += step;
+      state.reportScroll = Math.min(maxReportScroll(), state.reportScroll + step);
     }
     render();
   };
@@ -359,7 +361,7 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         label: match.item,
         path: match.item,
         isDir: false,
-        sizeBytes: 0,
+        sizeBytes: fileSizeOf(match.item),
         stagedItem: state.items.find((item) => item.path === match.item),
       }));
     }
@@ -474,6 +476,9 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         { label: "Output dir", value: f.outputDir.trim() || "(next to file)", kind: "text" },
         { label: "Enhance", value: f.enhancer, kind: "cycle" },
         { label: "Enh. profile", value: f.enhanceProfile, kind: "cycle" },
+        ...(f.enhancer === "unise"
+          ? [{ label: "Allow upload", value: f.allowUpload ? "consented" : "off", kind: "cycle" as const }]
+          : []),
         { label: "Split at (s)", value: f.splitThreshold.trim() || "(1200)", kind: "text" },
       ];
     }
@@ -481,6 +486,9 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       const f = state.enhanceForm;
       return [
         { label: "Engine", value: f.enhancer, kind: "cycle" },
+        ...(f.enhancer === "unise"
+          ? [{ label: "Allow upload", value: f.allowUpload ? "consented" : "off", kind: "cycle" as const }]
+          : []),
         { label: "Profile", value: f.profile, kind: "cycle" },
         { label: "Output dir", value: f.outputDir.trim() || "(next to file)", kind: "text" },
         { label: "Report", value: f.report ? "write report" : "no report", kind: "cycle" },
@@ -502,16 +510,30 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         case "Backend": f.backend = cycleValue(BACKENDS, f.backend, direction); break;
         case "Preset": f.preset = cycleValue(PRESETS, f.preset, direction); break;
         case "Formats": f.formats = cycleValue(FORMATS, f.formats, direction); break;
-        case "Enhance": f.enhancer = cycleValue(ENHANCERS, f.enhancer, direction); break;
+        case "Enhance":
+          f.enhancer = cycleValue(ENHANCERS, f.enhancer, direction);
+          warnIfRemoteWithoutConsent(f.enhancer === "unise", f.allowUpload);
+          break;
         case "Enh. profile": f.enhanceProfile = cycleValue(ENHANCE_PROFILE, f.enhanceProfile, direction); break;
+        case "Allow upload": f.allowUpload = !f.allowUpload; break;
       }
     } else {
       const f = state.enhanceForm;
       switch (row.label) {
-        case "Engine": f.enhancer = cycleValue(ENHANCE_ENGINES, f.enhancer, direction); break;
+        case "Engine":
+          f.enhancer = cycleValue(ENHANCE_ENGINES, f.enhancer, direction);
+          warnIfRemoteWithoutConsent(f.enhancer === "unise", f.allowUpload);
+          break;
         case "Profile": f.profile = cycleValue(ENHANCE_PROFILE, f.profile, direction); break;
         case "Report": f.report = !f.report; break;
+        case "Allow upload": f.allowUpload = !f.allowUpload; break;
       }
+    }
+  }
+
+  function warnIfRemoteWithoutConsent(isRemote: boolean, consented: boolean) {
+    if (isRemote && !consented) {
+      toast("unise uploads audio to a remote service — set 'Allow upload' to consent");
     }
   }
 
@@ -583,7 +605,20 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     formLines.push(runHint);
     formBox.add(runHint);
 
-    const logHeight = Math.max(3, renderer.height - rows.length - 8);
+    // Surface the selected file's failure reason right under the run hint;
+    // the log pane only keeps the tail, and rows show just a glyph.
+    const cursorItem = listRows()[Math.min(state.cursor, Math.max(0, listRows().length - 1))]?.stagedItem;
+    const errorShown = cursorItem?.status === "failed" && Boolean(cursorItem.error);
+    if (errorShown) {
+      const errorLine = new TextRenderable(renderer, {
+        content: `! ${cursorItem!.error}`.slice(0, 200),
+        fg: col(THEME.err),
+      });
+      formLines.push(errorLine);
+      formBox.add(errorLine);
+    }
+
+    const logHeight = Math.max(3, renderer.height - rows.length - (errorShown ? 1 : 0) - 8);
     for (const line of state.logs.slice(-logHeight)) {
       const fg = line.startsWith("✓") ? THEME.ok
         : line.startsWith("✗") ? THEME.err
@@ -606,6 +641,12 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     }
   }
 
+  function maxReportScroll(): number {
+    const lines = state.reportText.split("\n").length;
+    const height = Math.max(4, Math.floor(renderer.height * 0.6));
+    return Math.max(0, lines - height);
+  }
+
   function renderOverlay() {
     if (state.overlay === "none") {
       overlayHost.visible = false;
@@ -620,7 +661,7 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     } else if (state.overlay === "report") {
       const lines = state.reportText.split("\n");
       const height = Math.max(4, Math.floor(renderer.height * 0.6));
-      const start = Math.min(state.reportScroll, Math.max(0, lines.length - height));
+      const start = Math.min(state.reportScroll, maxReportScroll());
       overlayText.content = lines.slice(start, start + height).join("\n") || "(empty report)";
     } else if (state.overlay === "input") {
       overlayText.content = "";
@@ -644,9 +685,25 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   }
   // --- Browser navigation + staging -----------------------------------------------
   function stagePaths(paths: string[]): number {
-    const result = stageInto(state.items, paths);
+    const result = stageInto(state.items, paths, fileSizeOf);
     state.items = result.items;
     return result.added.length;
+  }
+
+  // Size lookups for staged/search rows (cosmetic; cached to keep renders cheap).
+  const sizeCache = new Map<string, number>();
+  function fileSizeOf(path: string): number {
+    let size = sizeCache.get(path);
+    if (size === undefined) {
+      try {
+        size = statSync(path).size;
+      } catch {
+        size = 0;
+      }
+      if (sizeCache.size > 4000) sizeCache.clear();
+      sizeCache.set(path, size);
+    }
+    return size;
   }
 
   async function stageFolder(dir: string) {
@@ -839,42 +896,6 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     }
   }
 
-  interface RunOutcome {
-    success: boolean;
-    output?: string;
-    reportPath?: string;
-    error?: string;
-  }
-
-  function parseRunOutcome(stdout: string): RunOutcome {
-    try {
-      const parsed = JSON.parse(stdout.trim()) as {
-        files?: Array<{
-          success: boolean;
-          error?: string;
-          output?: { txt?: string | null; srt?: string | null };
-          enhancement?: { outputFile?: string };
-        }>;
-      };
-      const file = parsed.files?.[0];
-      if (!file) return { success: false, error: "no result from child" };
-      if (!file.success) return { success: false, error: file.error };
-      const enhanced = file.enhancement?.outputFile;
-      return {
-        success: true,
-        output: enhanced ?? file.output?.txt ?? file.output?.srt ?? undefined,
-        reportPath: enhanced ? reportPathFor(enhanced) : undefined,
-      };
-    } catch {
-      return { success: false, error: "unreadable child output" };
-    }
-  }
-
-  function reportPathFor(enhancedFile: string): string {
-    const base = basename(enhancedFile, ".wav").replace(/_enhanced$/, "");
-    return `${dirname(enhancedFile)}/${base}_enhancement.json`;
-  }
-
   function renderDoctor(stdout: string): string {
     try {
       const report = JSON.parse(stdout.trim()) as {
@@ -1010,7 +1031,7 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         render();
       } else if (state.overlay === "report") {
         if (key.name === "down" || key.name === "j") {
-          state.reportScroll += 1;
+          state.reportScroll = Math.min(maxReportScroll(), state.reportScroll + 1);
           render();
         } else if (key.name === "up" || key.name === "k") {
           state.reportScroll = Math.max(0, state.reportScroll - 1);

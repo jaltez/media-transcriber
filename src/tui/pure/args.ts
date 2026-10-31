@@ -14,6 +14,7 @@ export interface TranscribeForm {
   outputDir: string;
   enhancer: "none" | "basic" | "deepfilternet" | "unise";
   enhanceProfile: "asr" | "master";
+  allowUpload: boolean;
   splitThreshold: string;
 }
 
@@ -24,6 +25,7 @@ export const DEFAULT_TRANSCRIBE_FORM: TranscribeForm = {
   formats: "txt,srt",
   outputDir: "",
   enhancer: "none",
+  allowUpload: false,
   enhanceProfile: "asr",
   splitThreshold: "",
 };
@@ -40,6 +42,7 @@ export function buildTranscribeArgs(form: TranscribeForm, inputFile: string): st
     args.push("--enhance-profile", form.enhanceProfile);
   }
   if (form.splitThreshold.trim()) args.push("--split-threshold", form.splitThreshold.trim());
+  if (form.allowUpload) args.push("--allow-upload");
   return args;
 }
 
@@ -47,6 +50,7 @@ export interface EnhanceForm {
   enhancer: "basic" | "deepfilternet" | "unise";
   profile: "asr" | "master";
   outputDir: string;
+  allowUpload: boolean;
   report: boolean;
 }
 
@@ -54,6 +58,7 @@ export const DEFAULT_ENHANCE_FORM: EnhanceForm = {
   enhancer: "basic",
   profile: "master",
   outputDir: "",
+  allowUpload: false,
   report: true,
 };
 
@@ -62,6 +67,7 @@ export function buildEnhanceArgs(form: EnhanceForm, inputFile: string): string[]
   args.push("--enhancer", form.enhancer);
   args.push("--enhance-profile", form.profile);
   if (form.report) args.push("--report");
+  if (form.allowUpload) args.push("--allow-upload");
   if (form.outputDir.trim()) args.push(form.outputDir.trim());
   return args;
 }
@@ -114,4 +120,54 @@ export function describeProgressEvent(event: ProgressEvent): string | null {
 function shortName(path: string): string {
   const parts = path.split(/[\\/]/);
   return parts[parts.length - 1] ?? path;
+}
+
+export interface RunOutcome {
+  success: boolean;
+  output?: string;
+  reportPath?: string;
+  error?: string;
+}
+
+/** Path of the <name>_enhancement.json report written next to an enhanced file. */
+export function enhancementReportPath(enhancedFile: string): string {
+  const dot = enhancedFile.lastIndexOf(".");
+  const base = (dot === -1 ? enhancedFile : enhancedFile.slice(0, dot)).replace(/_enhanced$/, "");
+  return `${base}_enhancement.json`;
+}
+
+/**
+ * Interpret the child CLI's final stdout JSON. Success envelopes carry
+ * files[]; config failures (e.g. unise without --allow-upload) are a bare
+ * { error, message } envelope instead.
+ */
+export function parseRunOutcome(stdout: string): RunOutcome {
+  try {
+    const parsed = JSON.parse(stdout.trim()) as {
+      error?: string;
+      message?: string;
+      files?: Array<{
+        success: boolean;
+        error?: string;
+        output?: { txt?: string | null; srt?: string | null };
+        enhancement?: { outputFile?: string };
+      }>;
+    };
+    const file = parsed.files?.[0];
+    if (!file) {
+      if (typeof parsed.error === "string") {
+        return { success: false, error: parsed.message ?? parsed.error };
+      }
+      return { success: false, error: "no result from child" };
+    }
+    if (!file.success) return { success: false, error: file.error };
+    const enhanced = file.enhancement?.outputFile;
+    return {
+      success: true,
+      output: enhanced ?? file.output?.txt ?? file.output?.srt ?? undefined,
+      reportPath: enhanced ? enhancementReportPath(enhanced) : undefined,
+    };
+  } catch {
+    return { success: false, error: "unreadable child output" };
+  }
 }

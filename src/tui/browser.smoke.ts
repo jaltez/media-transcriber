@@ -134,7 +134,25 @@ try {
   f = frame();
   check("'d' jumps relative to the browsed folder", f.includes("nested.mp3"));
 
-  // 10. final escape; teardown below (app still running normally).
+  // 10. Remote-engine consent: cycling Engine onto unise reveals the
+  // 'Allow upload' toggle and warns without consent.
+  await setup.mockInput.pressKey("h"); // back to the fixture root
+  await settle();
+  await setup.mockInput.pressKey("2"); // Enhance mode
+  await setup.mockInput.pressKey(KeyCodes.TAB); // focus the form
+  await setup.mockInput.pressKey(KeyCodes.ARROW_RIGHT); // basic -> deepfilternet
+  await setup.mockInput.pressKey(KeyCodes.ARROW_RIGHT); // deepfilternet -> unise
+  await settle();
+  f = frame();
+  check("unise engine shows the Allow upload toggle", f.includes("unise") && f.includes("Allow upload"));
+  check("unise without consent warns about upload", f.includes("remote service"));
+  await setup.mockInput.pressKey(KeyCodes.ARROW_DOWN); // cursor on Allow upload
+  await setup.mockInput.pressKey(KeyCodes.ARROW_RIGHT); // consent
+  await settle();
+  f = frame();
+  check("Allow upload cycles to consented", f.includes("consented"));
+
+  // 11. final escape; teardown below (app still running normally).
   await setup.mockInput.pressKey(KeyCodes.ESCAPE);
   await setup.renderOnce();
 } finally {
