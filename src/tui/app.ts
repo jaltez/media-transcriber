@@ -32,6 +32,7 @@ import { fuzzyFilter } from "./pure/fuzzy.js";
 import { parsePastedPaths } from "./pure/paste-paths.js";
 import {
   displayName,
+  displayPath,
   formatBytes,
   isSupportedMediaPath,
   listDirectory,
@@ -95,6 +96,7 @@ const HELP_TEXT = [
   "    t          show all files (media only by default)",
   "    /          recursive fuzzy search   esc  back to browser",
   "    d          go to any path (file stages, folder opens)",
+  "    s          staged-queue view (space unstage · a clear · s/esc back)",
   "",
   "  Main",
   "    tab        cycle focus (files → form → modes)",
@@ -114,6 +116,8 @@ interface TuiState {
   cwd: string;
   dirEntries: DirEntry[];
   showAllFiles: boolean;
+  /** What the Files pane lists: the browsed directory or the staged queue */
+  pane: "browser" | "queue";
   /** Filter input focused: list shows recursive fuzzy matches instead of cwd */
   filterMode: boolean;
   filter: string;
@@ -156,6 +160,7 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     cwd: startDir,
     dirEntries: [],
     showAllFiles: false,
+    pane: "browser",
     filterMode: false,
     filter: "",
     filterScan: null,
@@ -355,6 +360,16 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   }
 
   function listRows(): ListRow[] {
+    if (state.pane === "queue") {
+      // The staged queue across every directory, in staging order.
+      return state.items.map((item) => ({
+        label: item.path,
+        path: item.path,
+        isDir: false,
+        sizeBytes: item.sizeBytes,
+        stagedItem: item,
+      }));
+    }
     if (state.filterMode && state.filter.length > 0) {
       const scanned = state.filterScan ?? [];
       return fuzzyFilter(state.filter, scanned, (path) => path).slice(0, 200).map((match) => ({
@@ -416,12 +431,20 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       } else if (row.stagedItem) {
         const status = STATUS_GLYPH[row.stagedItem.status];
         marker = row.stagedItem.status === "pending" ? "✓" : status.glyph;
-        body = displayName(row.label, 24).padEnd(25) + formatBytes(row.stagedItem.sizeBytes).padStart(8);
+        // Queue and search rows carry full paths; keep the tail so same-name
+        // files in different folders stay distinguishable.
+        const name = state.pane === "queue" || state.filterMode
+          ? displayPath(row.label, 24)
+          : displayName(row.label, 24);
+        body = name.padEnd(25) + formatBytes(row.stagedItem.sizeBytes).padStart(8);
         fg = row.stagedItem.status === "pending" ? THEME.ok : status.color;
       } else {
         const supported = isSupportedMediaPath(row.path);
         marker = supported ? "+" : "·";
-        body = displayName(row.label, 24).padEnd(25) + formatBytes(row.sizeBytes).padStart(8);
+        const name = state.filterMode
+          ? displayPath(row.label, 24)
+          : displayName(row.label, 24);
+        body = name.padEnd(25) + formatBytes(row.sizeBytes).padStart(8);
         fg = supported ? THEME.fg : THEME.dim;
       }
       const line = new TextRenderable(renderer, {
@@ -446,16 +469,21 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       listLines.push(line);
       listBox.add(line);
     });
+    filesBox.title = state.pane === "queue" ? "Queue" : "Files";
     if (rows.length === 0) {
-      const message = state.filterMode && state.filter
-        ? "(no matches)"
-        : state.showAllFiles ? "(empty directory)" : "(no media files here — t shows all files)";
+      const message = state.pane === "queue"
+        ? "(queue empty — stage files with space)"
+        : state.filterMode && state.filter
+          ? "(no matches)"
+          : state.showAllFiles ? "(empty directory)" : "(no media files here — t shows all files)";
       const empty = new TextRenderable(renderer, { content: message, fg: col(THEME.dim) });
       listLines.push(empty);
       listBox.add(empty);
     }
 
-    const cwdLabel = state.filterMode && state.filter ? `search: ${state.cwd}` : state.cwd;
+    const cwdLabel = state.pane === "queue"
+      ? "queue view (s/esc back)"
+      : state.filterMode && state.filter ? `search: ${state.cwd}` : state.cwd;
     filesFooter.content = ` ${state.items.length} staged · ${cwdLabel}`.slice(0, 36);
   }
 
@@ -631,7 +659,10 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   }
 
   function renderFooter() {
-    footer.content = ` tab:focus(${state.focus})  enter:open  space:stage  /:search  r:run  ?:help  q:quit${state.running ? "  (run active)" : ""}`;
+    const hint = state.pane === "queue"
+      ? " tab:focus(files)  space:unstage  a:clear queue  s/esc:browser"
+      : ` tab:focus(${state.focus})  enter:open  space:stage  /:search  r:run  ?:help  q:quit`;
+    footer.content = hint + (state.running ? "  (run active)" : "");
   }
 
   function closeOverlayInput() {
@@ -1105,6 +1136,12 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         return;
       case "d":
         if (!state.running) {
+          // The go-to overlay navigates the browser pane; leave queue view first.
+          if (state.pane === "queue") {
+            state.pane = "browser";
+            state.cursor = 0;
+            state.listWindowStart = 0;
+          }
           openInputOverlay("", "go to directory or file…", (value) => {
             // Relative paths answer to the directory being browsed, not the launch cwd.
             const target = resolve(state.cwd, value.trim() || ".");
@@ -1146,7 +1183,43 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     if (state.focus === "files" && !state.filterMode) {
       const rows = listRows();
       const row = cursorRow(rows);
-      if (key.name === "down" || key.name === "j") {
+      if (key.name === "s") {
+        // Toggle between the browser and the staged-queue view.
+        state.pane = state.pane === "queue" ? "browser" : "queue";
+        state.cursor = 0;
+        state.listWindowStart = 0;
+        render();
+      } else if (state.pane === "queue") {
+        if (key.name === "down" || key.name === "j") {
+          state.cursor = Math.min(rows.length - 1, state.cursor + 1);
+          render();
+        } else if (key.name === "up" || key.name === "k") {
+          state.cursor = Math.max(0, state.cursor - 1);
+          render();
+        } else if (key.name === "space" || key.name === "return" || key.name === "enter" || key.name === "x") {
+          if (row) {
+            if (row.stagedItem?.status === "running") toast("still running — waits for the run to finish");
+            else {
+              state.items = unstagePath(state.items, row.path);
+              state.cursor = Math.min(state.cursor, Math.max(0, state.items.length - 1));
+              render();
+            }
+          }
+        } else if (key.name === "a") {
+          const removable = state.items.filter((item) => item.status !== "running");
+          const keep = state.items.filter((item) => item.status === "running");
+          state.items = keep;
+          state.cursor = 0;
+          state.listWindowStart = 0;
+          toast(removable.length > 0 ? `cleared ${removable.length} from queue` : "nothing to clear");
+          render();
+        } else if (key.name === "escape" || key.name === "h" || key.name === "left" || key.name === "backspace") {
+          state.pane = "browser";
+          state.cursor = 0;
+          state.listWindowStart = 0;
+          render();
+        }
+      } else if (key.name === "down" || key.name === "j") {
         state.cursor = Math.min(rows.length - 1, state.cursor + 1);
         render();
       } else if (key.name === "up" || key.name === "k") {

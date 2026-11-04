@@ -152,6 +152,26 @@ try {
   f = frame();
   check("Allow upload cycles to consented", f.includes("consented"));
 
+  // 11. Staged-queue view: see everything staged across folders, unstage, clear.
+  await setup.mockInput.pressKey(KeyCodes.TAB); // form -> modes
+  await setup.mockInput.pressKey(KeyCodes.TAB); // modes -> files
+  await settle();
+  await setup.mockInput.pressKey("s"); // open the queue view
+  await settle();
+  f = frame();
+  check("queue view lists every staged file", f.includes("Queue") && f.includes("clip.wav") && f.includes("nested.mp3"));
+  await setup.mockInput.pressKey(" "); // unstage the first (clip.wav)
+  await settle();
+  f = frame();
+  check("space unstages from the queue", f.includes("1 staged") && !f.includes("clip.wav"));
+  await setup.mockInput.pressKey("a"); // clear the rest
+  await settle();
+  f = frame();
+  check("'a' clears the queue", f.includes("queue empty"));
+  await setup.mockInput.pressKey("s"); // back to the browser
+  await settle();
+  f = frame();
+  check("'s' returns to the browser", f.includes("Files"));
   // 11. final escape; teardown below (app still running normally).
   await setup.mockInput.pressKey(KeyCodes.ESCAPE);
   await setup.renderOnce();

@@ -148,6 +148,12 @@ export function queuePaths(items: QueueItem[]): string[] {
   return items.filter((item) => item.status !== "running").map((item) => item.path);
 }
 
+/** Fit a path in maxWidth cells, keeping the tail (dir context over prefix). */
+export function displayPath(path: string, maxWidth: number): string {
+  if (path.length <= maxWidth) return path.padEnd(maxWidth);
+  return `…${path.slice(-(maxWidth - 1))}`;
+}
+
 export function displayName(path: string, maxWidth: number): string {
   const name = basename(path);
   if (name.length <= maxWidth) return name;
