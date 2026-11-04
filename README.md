@@ -23,8 +23,8 @@ media-transcriber setup whisper-local
 # Transcribe a single file
 media-transcriber transcribe ./meeting.mp4
 
-# Transcribe a folder
-media-transcriber transcribe ./data/input ./data/output
+# Interactive mode (optional; needs Bun or Node >= 26.4)
+media-transcriber tui
 ```
 
 ## Requirements
