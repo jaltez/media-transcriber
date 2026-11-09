@@ -58,7 +58,7 @@ try {
   let f = frame();
   check("lists folders before files", f.indexOf("sub/") !== -1 && f.indexOf("clip.wav") !== -1 && f.indexOf("sub/") < f.indexOf("clip.wav"));
   check("hides non-media files by default", !f.includes("notes.txt"));
-  check("shows staged count and cwd basename in footer", f.includes("staged") && f.includes("mt-browser-smoke-"));
+  check("footer shows list position and staged count", f.includes("1/2 · 0 staged"));
 
   // 2. 't' reveals all files.
   await setup.mockInput.pressKey("t");
@@ -172,7 +172,89 @@ try {
   await settle();
   f = frame();
   check("'s' returns to the browser", f.includes("Files"));
-  // 11. final escape; teardown below (app still running normally).
+
+  // 12. Paging: Home/End/PgUp/PgDn jump through the list and the footer keeps
+  // showing where the cursor is. (Step 9 left us inside sub/.)
+  await setup.mockInput.pressKey("h");
+  await settle();
+  f = frame();
+  check("'h' climbs back to the fixture root", f.includes("clip.wav"));
+  await setup.mockInput.pressKey(KeyCodes.END);
+  await settle();
+  f = frame();
+  check("End jumps to the last row", f.includes("2/2 · 0 staged"));
+  await setup.mockInput.pressKey(KeyCodes.HOME);
+  await settle();
+  f = frame();
+  check("Home jumps to the first row", f.includes("1/2 · 0 staged"));
+  await setup.mockInput.pressKey("\u001b[6~"); // PgDn
+  await settle();
+  f = frame();
+  check("PgDn moves down a page", f.includes("2/2 · 0 staged"));
+  await setup.mockInput.pressKey("\u001b[5~"); // PgUp
+  await settle();
+  f = frame();
+  check("PgUp moves up a page", f.includes("1/2 · 0 staged"));
+
+  // 13. Engine-dependent rows: turning DeepFilterNet on reveals the tuning rows
+  // that the CLI accepts but the form could not reach.
+  await setup.mockInput.pressKey(KeyCodes.TAB); // files -> form
+  await settle();
+  await setup.mockInput.pressKey(KeyCodes.ARROW_UP); // cursor was on Allow upload
+  await setup.mockInput.pressKey(KeyCodes.ARROW_RIGHT); // unise -> basic
+  await setup.mockInput.pressKey(KeyCodes.ARROW_RIGHT); // basic -> deepfilternet
+  await settle();
+  f = frame();
+  check("deepfilternet reveals the DFN attenuation row", f.includes("DFN atten"));
+  check("tuning rows replace the unise consent row", !f.includes("Allow upload"));
+  await setup.mockInput.pressKey(KeyCodes.ARROW_DOWN); // Declick
+  await setup.mockInput.pressKey(KeyCodes.ARROW_RIGHT); // off -> on
+  await settle();
+  f = frame();
+  check("Declick toggles on in the form", /Declick\s+on/.test(f));
+
+  // Cursor parked on the last Transcribe row; switching to the shorter Enhance
+  // form must clamp it instead of indexing past the rows.
+  await setup.mockInput.pressKey("1"); // Transcribe
+  await settle();
+  for (let i = 0; i < 10; i += 1) await setup.mockInput.pressKey(KeyCodes.ARROW_DOWN);
+  await setup.mockInput.pressKey("2"); // Enhance: fewer rows
+  await settle();
+  await setup.mockInput.pressKey(KeyCodes.ARROW_LEFT);
+  await settle();
+  f = frame();
+  check("shrinking rows clamps a stale form cursor", !exitedEarly && f.includes("no report"));
+
+  // 14. A plain 'r' on an empty queue explains itself and advertises 'R'.
+  await setup.mockInput.pressKey("r");
+  await settle();
+  f = frame();
+  check("'r' on an empty queue asks for files", f.includes("No files selected"));
+  check("run hint advertises the rerun-all key", f.includes("R: rerun all"));
+
+  // 15. A folder deleted behind our back: say why, then fall back to the parent.
+  const gone = join(dir, "gone");
+  await mkdir(gone);
+  await writeFile(join(gone, "inside.wav"), "x");
+  await setup.mockInput.pressKey(KeyCodes.TAB); // form -> modes
+  await setup.mockInput.pressKey(KeyCodes.TAB); // modes -> files
+  await setup.mockInput.pressKey("g"); // reload so gone/ appears
+  await settle();
+  f = frame();
+  check("reload lists the new folder", f.includes("gone/"));
+  await setup.mockInput.pressKey(KeyCodes.RETURN); // folders sort first: gone/
+  await settle();
+  f = frame();
+  check("entering the temporary folder lists its file", f.includes("inside.wav"));
+  await rm(gone, { recursive: true, force: true });
+  await setup.mockInput.pressKey("g"); // reload the now-deleted folder
+  await settle();
+  await settle();
+  f = frame();
+  check("deleted folder explains and climbs to the parent", !exitedEarly && f.includes("going to parent"));
+  check("parent listing is restored", f.includes("clip.wav"));
+
+  // 16. final escape; teardown below (app still running normally).
   await setup.mockInput.pressKey(KeyCodes.ESCAPE);
   await setup.renderOnce();
 } finally {

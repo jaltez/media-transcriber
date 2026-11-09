@@ -26,6 +26,7 @@ import {
   parseProgressLine,
   parseRunOutcome,
   type EnhanceForm,
+  type EnhanceTuning,
   type TranscribeForm,
 } from "./pure/args.js";
 import { fuzzyFilter } from "./pure/fuzzy.js";
@@ -36,7 +37,9 @@ import {
   formatBytes,
   isSupportedMediaPath,
   listDirectory,
-  queuePaths,
+  MAX_STATED_ENTRIES,
+  pendingTargets,
+  resetForRerun,
   scanMediaFiles,
   stageInto,
   unstagePath,
@@ -77,6 +80,9 @@ const FORMATS = ["txt,srt", "txt", "srt"] as const;
 const ENHANCERS = ["none", "basic", "deepfilternet", "unise"] as const;
 const ENHANCE_PROFILE = ["asr", "master"] as const;
 const ENHANCE_ENGINES = ["basic", "deepfilternet", "unise"] as const;
+const DEVICES = ["auto", "cuda", "cpu"] as const;
+/** DeepFilterNet attenuation limit choices; "off" keeps the engine default. */
+const DFN_ATTEN = ["off", "6", "12", "20"] as const;
 
 const STATUS_GLYPH: Record<QueueItem["status"], { glyph: string; color: string }> = {
   pending: { glyph: "·", color: THEME.dim },
@@ -89,7 +95,7 @@ const HELP_TEXT = [
   "media-transcriber TUI — keys",
   "",
   "  Files browser",
-  "    ↑↓ / j k   move          enter / l → open folder",
+  "    ↑↓ / j k   move          PgUp/PgDn/Home/End jump",
   "    h / ←      parent folder  g  reload directory",
   "    space      stage file / stage folder (recursive)",
   "    a          stage or clear all media in this folder",
@@ -101,13 +107,15 @@ const HELP_TEXT = [
   "  Main",
   "    tab        cycle focus (files → form → modes)",
   "    1 / 2 / 3  switch Transcribe / Enhance / Doctor",
-  "    ← / →      change the focused form value",
-  "    return     edit a text field · r / ctrl+r run staged files",
+  "    ← / →      change value · Device/Declick/Notches rows appear by engine",
+  "    return     edit a text field",
+  "    r          run pending + failed only   R  rerun everything",
+  "    c          cancel the active run (the TUI stays open)",
   "    o          open output in system app",
   "    v          view enhancement report of cursor file",
   "    unise adds an 'Allow upload' consent row (remote engine);",
   "    a failed file's error shows under the run hint (✗ rows)",
-  "    esc        close overlay · q quit (asks if a run is active)",
+  "    esc        close overlay · q / ctrl+c quit (asks if a run is active)",
   "",
   "Runs execute the real CLI as a child process (--json).",
 ].join("\n");
@@ -115,6 +123,8 @@ const HELP_TEXT = [
 interface TuiState {
   cwd: string;
   dirEntries: DirEntry[];
+  /** The browsed directory vanished or is unreadable (distinct from empty). */
+  dirError: boolean;
   showAllFiles: boolean;
   /** What the Files pane lists: the browsed directory or the staged queue */
   pane: "browser" | "queue";
@@ -131,6 +141,13 @@ interface TuiState {
   transcribeForm: TranscribeForm;
   enhanceForm: EnhanceForm;
   running: boolean;
+  /** Wall clock of the active run (run hint timer). */
+  runStartedAt: number;
+  /** Files this run set out to process, and how many already finished. */
+  runTotal: number;
+  runDone: number;
+  /** Latest step line from the child, shown under the run hint. */
+  lastStep: string;
   logs: string[];
   toast?: string;
   overlay: "none" | "help" | "quit" | "input" | "report";
@@ -159,6 +176,7 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   const state: TuiState = {
     cwd: startDir,
     dirEntries: [],
+    dirError: false,
     showAllFiles: false,
     pane: "browser",
     filterMode: false,
@@ -172,6 +190,10 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     enhanceForm: { ...DEFAULT_ENHANCE_FORM },
     transcribeForm: { ...DEFAULT_TRANSCRIBE_FORM },
     running: false,
+    runStartedAt: 0,
+    runTotal: 0,
+    runDone: 0,
+    lastStep: "",
     logs: ["Ready. Browse with ↑↓/enter, space stages a file or folder, / searches."],
     overlay: "none",
     reportText: "",
@@ -181,8 +203,12 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   };
 
   let child: ChildProcess | null = null;
+  /** Set by 'c' (or a ctrl+c quit): the run loop stops after the current child. */
+  let cancelRequested = false;
   let destroyed = false;
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Repaints the run clock every second while a run is active. */
+  let runTicker: ReturnType<typeof setInterval> | null = null;
 
   // --- Static skeleton -------------------------------------------------------
   renderer.root.flexDirection = "column";
@@ -471,12 +497,18 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     });
     filesBox.title = state.pane === "queue" ? "Queue" : "Files";
     if (rows.length === 0) {
+      const unreadable = state.pane === "browser" && state.dirError;
       const message = state.pane === "queue"
         ? "(queue empty — stage files with space)"
-        : state.filterMode && state.filter
-          ? "(no matches)"
-          : state.showAllFiles ? "(empty directory)" : "(no media files here — t shows all files)";
-      const empty = new TextRenderable(renderer, { content: message, fg: col(THEME.dim) });
+        : unreadable
+          ? "(folder unreadable)"
+          : state.filterMode && state.filter
+            ? "(no matches)"
+            : state.showAllFiles ? "(empty directory)" : "(no media files here — t shows all files)";
+      const empty = new TextRenderable(renderer, {
+        content: message,
+        fg: col(unreadable ? THEME.err : THEME.dim),
+      });
       listLines.push(empty);
       listBox.add(empty);
     }
@@ -484,7 +516,15 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     const cwdLabel = state.pane === "queue"
       ? "queue view (s/esc back)"
       : state.filterMode && state.filter ? `search: ${state.cwd}` : state.cwd;
-    filesFooter.content = ` ${state.items.length} staged · ${cwdLabel}`.slice(0, 36);
+    // Counters survive truncation; the path loses its head instead. The footer
+    // lives inside a 38-cell box, so 36 cells of text fit.
+    const position = rows.length === 0 ? 0 : state.cursor + 1;
+    const prefix = ` ${position}/${rows.length} · ${state.items.length} staged · `;
+    const budget = Math.max(0, 36 - prefix.length);
+    const tail = cwdLabel.length <= budget
+      ? cwdLabel
+      : budget > 1 ? `…${cwdLabel.slice(-(budget - 1))}` : "";
+    filesFooter.content = prefix + tail;
   }
 
   interface FormRow {
@@ -508,6 +548,12 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
           ? [{ label: "Allow upload", value: f.allowUpload ? "consented" : "off", kind: "cycle" as const }]
           : []),
         { label: "Split at (s)", value: f.splitThreshold.trim() || "(1200)", kind: "text" },
+        { label: "Device", value: f.device, kind: "cycle" },
+        // Enhancement tuning only matters once an engine runs.
+        ...(f.enhancer === "none" ? [] : tuningRows(f)),
+        ...(f.enhancer === "deepfilternet"
+          ? [{ label: "DFN atten", value: f.dfnAtten, kind: "cycle" as const }]
+          : []),
       ];
     }
     if (state.mode === "Enhance") {
@@ -517,12 +563,25 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         ...(f.enhancer === "unise"
           ? [{ label: "Allow upload", value: f.allowUpload ? "consented" : "off", kind: "cycle" as const }]
           : []),
+        ...tuningRows(f),
+        ...(f.enhancer === "deepfilternet"
+          ? [{ label: "DFN atten", value: f.dfnAtten, kind: "cycle" as const }]
+          : []),
         { label: "Profile", value: f.profile, kind: "cycle" },
         { label: "Output dir", value: f.outputDir.trim() || "(next to file)", kind: "text" },
         { label: "Report", value: f.report ? "write report" : "no report", kind: "cycle" },
       ];
     }
     return [];
+  }
+
+  /** The three boolean tuning rows both modes share. */
+  function tuningRows(tuning: EnhanceTuning): FormRow[] {
+    return [
+      { label: "Declick", value: tuning.declick ? "on" : "off", kind: "cycle" },
+      { label: "Hum notch", value: tuning.humNotch ? "on" : "off", kind: "cycle" },
+      { label: "Howl notch", value: tuning.howlNotch ? "on" : "off", kind: "cycle" },
+    ];
   }
 
   function cycleValue<T extends string>(values: readonly T[], current: T, direction: 1 | -1): T {
@@ -544,6 +603,11 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
           break;
         case "Enh. profile": f.enhanceProfile = cycleValue(ENHANCE_PROFILE, f.enhanceProfile, direction); break;
         case "Allow upload": f.allowUpload = !f.allowUpload; break;
+        case "Device": f.device = cycleValue(DEVICES, f.device, direction); break;
+        case "Declick": f.declick = !f.declick; break;
+        case "Hum notch": f.humNotch = !f.humNotch; break;
+        case "Howl notch": f.howlNotch = !f.howlNotch; break;
+        case "DFN atten": f.dfnAtten = cycleValue(DFN_ATTEN, f.dfnAtten, direction); break;
       }
     } else {
       const f = state.enhanceForm;
@@ -555,6 +619,10 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         case "Profile": f.profile = cycleValue(ENHANCE_PROFILE, f.profile, direction); break;
         case "Report": f.report = !f.report; break;
         case "Allow upload": f.allowUpload = !f.allowUpload; break;
+        case "Declick": f.declick = !f.declick; break;
+        case "Hum notch": f.humNotch = !f.humNotch; break;
+        case "Howl notch": f.howlNotch = !f.howlNotch; break;
+        case "DFN atten": f.dfnAtten = cycleValue(DFN_ATTEN, f.dfnAtten, direction); break;
       }
     }
   }
@@ -613,10 +681,13 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       formBox.add(line);
     });
 
+    // Progress at a glance: how many files of this run finished, elapsed time,
+    // and the child's current step.
+    const pendingCount = pendingTargets(state.items).length;
     const runHint = new TextRenderable(renderer, {
       content: state.running
-        ? `Running… (${state.logs.length} events)`
-        : `r: run on ${state.items.length} staged file(s)`,
+        ? `▶ ${state.runDone}/${state.runTotal} · ${Math.round((Date.now() - state.runStartedAt) / 1000)}s`
+        : `r: run ${pendingCount}/${state.items.length} · R: rerun all`,
       fg: col(state.running ? THEME.warn : THEME.accent),
     });
     runHint.onMouseDown = () => {
@@ -633,6 +704,16 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     formLines.push(runHint);
     formBox.add(runHint);
 
+    const stepShown = state.running && state.lastStep.length > 0;
+    if (stepShown) {
+      const stepLine = new TextRenderable(renderer, {
+        content: `   ${state.lastStep}`.slice(0, 120),
+        fg: col(THEME.dim),
+      });
+      formLines.push(stepLine);
+      formBox.add(stepLine);
+    }
+
     // Surface the selected file's failure reason right under the run hint;
     // the log pane only keeps the tail, and rows show just a glyph.
     const cursorItem = listRows()[Math.min(state.cursor, Math.max(0, listRows().length - 1))]?.stagedItem;
@@ -646,7 +727,10 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
       formBox.add(errorLine);
     }
 
-    const logHeight = Math.max(3, renderer.height - rows.length - (errorShown ? 1 : 0) - 8);
+    const logHeight = Math.max(
+      3,
+      renderer.height - rows.length - (errorShown ? 1 : 0) - (stepShown ? 1 : 0) - 8,
+    );
     for (const line of state.logs.slice(-logHeight)) {
       const fg = line.startsWith("✓") ? THEME.ok
         : line.startsWith("✗") ? THEME.err
@@ -749,6 +833,17 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     state.cwd = resolve(dir);
     const entries = await listDirectory(state.cwd, state.showAllFiles);
     if (seq !== loadSeq) return; // superseded by newer navigation
+    if (entries === null) {
+      // Missing or unreadable (deleted folder, permissions): say so and climb.
+      state.dirError = true;
+      state.dirEntries = [];
+      toast(`Can't read ${state.cwd} — going to parent`);
+      const parent = dirname(state.cwd);
+      if (parent !== state.cwd) void loadDir(parent);
+      else render();
+      return;
+    }
+    state.dirError = false;
     state.dirEntries = entries;
     state.filterScan = null;
     state.filter = "";
@@ -757,6 +852,9 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     state.filterMode = false;
     state.cursor = 0;
     state.listWindowStart = 0;
+    if (entries.length > MAX_STATED_ENTRIES) {
+      toast(`large folder (${entries.length}) — sizes hidden`);
+    }
     render();
   }
 
@@ -857,7 +955,14 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         const line = stderrBuffer.slice(0, newline);
         stderrBuffer = stderrBuffer.slice(newline + 1);
         const event = parseProgressLine(line);
-        if (event) pushLog(describeProgressEvent(event));
+        if (event) {
+          const text = describeProgressEvent(event);
+          pushLog(text);
+          // Step events drive the one-line progress note under the run hint.
+          if (event.event === "step_start" || event.event === "step_progress") {
+            state.lastStep = (text ?? "").trim();
+          }
+        }
         newline = stderrBuffer.indexOf("\n");
       }
       render();
@@ -869,29 +974,50 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     return promise;
   }
 
-  async function startRun() {
+  async function startRun(forceAll = false) {
     if (state.running) return;
+    cancelRequested = false;
     if (state.mode === "Doctor") {
       state.running = true;
       state.logs = [];
       render();
       const result = await spawnCli(buildDoctorArgs());
-      state.doctorText = renderDoctor(result.stdout);
+      // A cancelled doctor keeps whatever it had already shown.
+      if (!cancelRequested) state.doctorText = renderDoctor(result.stdout);
       state.running = false;
       render();
       return;
     }
-    const targets = queuePaths(state.items);
+    // 'r' retries what has not succeeded yet; 'R' re-arms the whole queue.
+    const targetItems = forceAll
+      ? state.items.filter((item) => item.status !== "running")
+      : pendingTargets(state.items);
+    const targets = targetItems.map((item) => item.path);
     if (targets.length === 0) {
-      toast("No files selected");
+      toast(state.items.length > 0 ? "all done — press R to rerun" : "No files selected");
+      render();
       return;
+    }
+    // Never let a plain 'r' look like a full rerun when finished items exist.
+    if (!forceAll && state.items.some((item) => item.status === "done")) {
+      toast("r: pending+failed only · R: rerun all");
     }
 
     state.running = true;
+    state.runStartedAt = Date.now();
+    state.runTotal = targets.length;
+    state.runDone = 0;
+    state.lastStep = "";
     state.logs = [];
     render();
+    // The clock advances even while the child is silent inside one file.
+    runTicker = setInterval(() => render(), 1000);
+    let ok = 0;
+    let failed = 0;
+    let cancelled = 0;
     try {
       for (const target of targets) {
+        state.lastStep = "";
         const masterIndex = state.items.findIndex((item) => item.path === target);
         if (masterIndex === -1) continue;
         state.items[masterIndex]!.status = "running";
@@ -904,6 +1030,14 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
 
         const item = state.items[masterIndex]!;
         const outcome = parseRunOutcome(result.stdout);
+        if (cancelRequested) {
+          // Killed mid-file: record it (✗ cancelled) and leave the rest queued.
+          state.items[masterIndex] = { ...item, status: "failed", error: "cancelled" };
+          cancelled += 1;
+          state.runDone += 1;
+          render();
+          break;
+        }
         if (result.code === 0 && outcome.success) {
           state.items[masterIndex] = {
             ...item,
@@ -912,17 +1046,28 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
             reportPath: outcome.reportPath,
             error: undefined,
           };
+          ok += 1;
         } else {
           state.items[masterIndex] = {
             ...item,
             status: "failed",
             error: outcome.error ?? `exit ${result.code ?? "?"}`,
           };
+          failed += 1;
         }
+        state.runDone += 1;
         render();
       }
     } finally {
+      if (runTicker) {
+        clearInterval(runTicker);
+        runTicker = null;
+      }
       state.running = false;
+      state.lastStep = "";
+      const summary = [`${ok} ok`, `${failed} failed`];
+      if (cancelled > 0) summary.push(`${cancelled} cancelled`);
+      toast(`Run done: ${summary.join(" · ")}`);
       render();
     }
   }
@@ -1024,6 +1169,16 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   }
 
   renderer.keyInput.on("keypress", (key: KeyEvent) => {
+    // ctrl+c never leaves the terminal in a half-run state: mid-run it offers
+    // the same kill-and-quit dialog as 'q', otherwise it quits outright.
+    if (key.ctrl === true && key.name === "c") {
+      if (state.running) {
+        state.overlay = "quit";
+        render();
+      } else shutdown();
+      return;
+    }
+
     // --- Filter mode: the input owns typing; it must be explicitly exited ---
     const filterFocused = state.focus === "files" && state.filterMode;
     if (filterFocused) {
@@ -1129,7 +1284,23 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
         }
         return;
       case "r":
-        if (!state.running) void startRun();
+      case "R": {
+        if (state.running) return;
+        // Parsers disagree on shift-r: either the name is "R" or it is "r"
+        // with shift set. Both mean rerun-everything.
+        const rerunAll = key.name === "R" || key.shift === true;
+        if (rerunAll) state.items = resetForRerun(state.items);
+        void startRun(rerunAll);
+        return;
+      }
+      case "c":
+        // Cancel the run but stay in the TUI: the loop stops after the child dies.
+        if (state.running) {
+          cancelRequested = true;
+          child?.kill("SIGTERM");
+          toast("cancelling…");
+          render();
+        }
         return;
       case "g":
         void loadDir(state.cwd);
@@ -1183,12 +1354,24 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     if (state.focus === "files" && !state.filterMode) {
       const rows = listRows();
       const row = cursorRow(rows);
+      const jumpTo = (index: number) => {
+        state.cursor = Math.max(0, Math.min(rows.length - 1, index));
+        render();
+      };
       if (key.name === "s") {
         // Toggle between the browser and the staged-queue view.
         state.pane = state.pane === "queue" ? "browser" : "queue";
         state.cursor = 0;
         state.listWindowStart = 0;
         render();
+      } else if (key.name === "pageup") {
+        jumpTo(state.cursor - listHeight());
+      } else if (key.name === "pagedown") {
+        jumpTo(state.cursor + listHeight());
+      } else if (key.name === "home") {
+        jumpTo(0);
+      } else if (key.name === "end") {
+        jumpTo(rows.length - 1);
       } else if (state.pane === "queue") {
         if (key.name === "down" || key.name === "j") {
           state.cursor = Math.min(rows.length - 1, state.cursor + 1);
@@ -1256,6 +1439,8 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
     }
     if (state.focus === "form") {
       const rows = formRows();
+      // Rows come and go with the engine; a stale cursor would index past the end.
+      if (state.formRow > rows.length - 1) state.formRow = rows.length - 1;
       if (key.name === "down" || key.name === "j") {
         state.formRow = Math.min(rows.length - 1, state.formRow + 1);
         render();
@@ -1326,13 +1511,20 @@ export function createTuiApp(renderer: CliRenderer, startDir: string): TuiApp {
   function shutdown() {
     if (destroyed) return;
     destroyed = true;
+    // Without this the run loop would resume after the killed child's close
+    // event and spawn the rest of the queue as headless orphans (any host that
+    // outlives the renderer, e.g. an embedded TUI, would leak them).
+    cancelRequested = true;
     clearTimeout(toastTimer);
+    if (runTicker) clearInterval(runTicker);
+    runTicker = null;
     child?.kill("SIGTERM");
     renderer.destroy();
   }
 
   renderer.on("destroy", () => {
     destroyed = true;
+    cancelRequested = true;
     child?.kill("SIGTERM");
   });
 

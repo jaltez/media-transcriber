@@ -36,16 +36,25 @@ export function isSupportedMediaPath(path: string): boolean {
   return (SUPPORTED_EXTENSIONS as readonly string[]).includes(path.slice(dot).toLowerCase());
 }
 
-/** List one directory: folders first, then files; media files only unless allFiles. */
-export async function listDirectory(dir: string, allFiles: boolean): Promise<DirEntry[]> {
-  if (!existsSync(dir)) return [];
+/** Above this many entries the size column is dropped to keep listing instant. */
+export const MAX_STATED_ENTRIES = 500;
+
+/**
+ * List one directory: folders first, then files; media files only unless
+ * allFiles. Returns null when the directory is missing or unreadable (the
+ * caller distinguishes that from a genuinely empty folder).
+ */
+export async function listDirectory(dir: string, allFiles: boolean): Promise<DirEntry[] | null> {
+  if (!existsSync(dir)) return null;
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    return [];
+    return null;
   }
 
+  // One stat per media file is slow on huge folders; sizes are cosmetic.
+  const withSizes = entries.length <= MAX_STATED_ENTRIES;
   const dirs: DirEntry[] = [];
   const files: DirEntry[] = [];
   for (const entry of entries) {
@@ -65,10 +74,12 @@ export async function listDirectory(dir: string, allFiles: boolean): Promise<Dir
     } else if (entry.isFile() || entry.isSymbolicLink()) {
       if (!allFiles && !isSupportedMediaPath(path)) continue;
       let sizeBytes = 0;
-      try {
-        sizeBytes = (await stat(path)).size;
-      } catch {
-        // Unreadable size is cosmetic.
+      if (withSizes) {
+        try {
+          sizeBytes = (await stat(path)).size;
+        } catch {
+          // Unreadable size is cosmetic.
+        }
       }
       files.push({
         name: entry.name,
@@ -144,8 +155,16 @@ export function unstagePath(items: QueueItem[], path: string): QueueItem[] {
   return items.filter((candidate) => candidate.path !== path);
 }
 
-export function queuePaths(items: QueueItem[]): string[] {
-  return items.filter((item) => item.status !== "running").map((item) => item.path);
+/** What a plain `r` runs: never-succeeded items, in queue order. */
+export function pendingTargets(items: QueueItem[]): QueueItem[] {
+  return items.filter((item) => item.status === "pending" || item.status === "failed");
+}
+
+/** Re-arm the queue for `R`: finished and failed items go back to pending. */
+export function resetForRerun(items: QueueItem[]): QueueItem[] {
+  return items.map((item) =>
+    item.status === "running" ? item : { ...item, status: "pending" as const, error: undefined },
+  );
 }
 
 /** Fit a path in maxWidth cells, keeping the tail (dir context over prefix). */

@@ -8,6 +8,7 @@ import {
   buildDoctorArgs,
   buildEnhanceArgs,
   buildTranscribeArgs,
+  DEFAULT_ENHANCE_FORM,
   DEFAULT_TRANSCRIBE_FORM,
   enhancementReportPath,
   describeProgressEvent,
@@ -17,8 +18,10 @@ import {
 import {
   formatBytes,
   listDirectory,
+  MAX_STATED_ENTRIES,
+  pendingTargets,
+  resetForRerun,
   scanMediaFiles,
-  queuePaths,
   stageInto,
   unstagePath,
 } from "./queue.js";
@@ -124,7 +127,7 @@ describe("buildTranscribeArgs", () => {
 describe("buildEnhanceArgs / buildDoctorArgs", () => {
   it("builds enhance args with engine, profile, report, and output", () => {
     expect(buildEnhanceArgs(
-      { enhancer: "deepfilternet", profile: "asr", outputDir: "/o", report: true, allowUpload: false },
+      { ...DEFAULT_ENHANCE_FORM, enhancer: "deepfilternet", profile: "asr", outputDir: "/o" },
       "/in/a.wav",
     )).toEqual(["enhance", "/in/a.wav", "--json", "--enhancer", "deepfilternet", "--enhance-profile", "asr", "--report", "/o"]);
   });
@@ -134,14 +137,57 @@ describe("buildEnhanceArgs / buildDoctorArgs", () => {
   });
 });
 
+describe("enhancement tuning flags", () => {
+  it("emits none of the tuning flags at their CLI defaults", () => {
+    const transcribe = buildTranscribeArgs(
+      { ...DEFAULT_TRANSCRIBE_FORM, enhancer: "deepfilternet" },
+      "/in/a.wav",
+    );
+    const enhance = buildEnhanceArgs({ ...DEFAULT_ENHANCE_FORM, enhancer: "deepfilternet" }, "/in/a.wav");
+    for (const args of [transcribe, enhance]) {
+      expect(args).not.toContain("--declick");
+      expect(args).not.toContain("--no-hum-notch");
+      expect(args).not.toContain("--howl-notch");
+      expect(args).not.toContain("--dfn-atten");
+    }
+    expect(transcribe).not.toContain("-d");
+  });
+
+  it("passes device and every tuning flag through to the child", () => {
+    const tuning = { declick: true, humNotch: false, howlNotch: true, dfnAtten: "12" as const };
+    const transcribe = buildTranscribeArgs(
+      { ...DEFAULT_TRANSCRIBE_FORM, ...tuning, device: "cuda", enhancer: "deepfilternet" },
+      "/in/a.wav",
+    );
+    expect(transcribe.join(" ")).toContain(
+      "-d cuda --enhance deepfilternet --declick --no-hum-notch --howl-notch --dfn-atten 12",
+    );
+    const enhance = buildEnhanceArgs({ ...DEFAULT_ENHANCE_FORM, ...tuning, enhancer: "deepfilternet" }, "/in/a.wav");
+    expect(enhance.join(" ")).toContain("--declick --no-hum-notch --howl-notch --dfn-atten 12");
+  });
+
+  it("keeps --dfn-atten off engines that have no attenuation limit", () => {
+    const form = { ...DEFAULT_ENHANCE_FORM, ...{ declick: true, humNotch: false, howlNotch: true, dfnAtten: "12" as const } };
+    const basic = buildEnhanceArgs({ ...form, enhancer: "basic" }, "/in/a.wav");
+    expect(basic).toContain("--declick");
+    expect(basic).not.toContain("--dfn-atten");
+    const transcribe = buildTranscribeArgs(
+      { ...DEFAULT_TRANSCRIBE_FORM, ...form, enhancer: "basic" },
+      "/in/a.wav",
+    );
+    expect(transcribe).toContain("--declick");
+    expect(transcribe).not.toContain("--dfn-atten");
+  });
+});
+
 describe("allow-upload consent", () => {
   it("is omitted unless explicitly consented", () => {
     expect(buildEnhanceArgs(
-      { enhancer: "unise", profile: "master", outputDir: "", report: false, allowUpload: false },
+      { ...DEFAULT_ENHANCE_FORM, enhancer: "unise", profile: "master", report: false },
       "/in/a.wav",
     )).not.toContain("--allow-upload");
     expect(buildEnhanceArgs(
-      { enhancer: "unise", profile: "master", outputDir: "", report: false, allowUpload: true },
+      { ...DEFAULT_ENHANCE_FORM, enhancer: "unise", profile: "master", report: false, allowUpload: true },
       "/in/a.wav",
     )).toContain("--allow-upload");
     expect(buildTranscribeArgs({ ...DEFAULT_TRANSCRIBE_FORM, enhancer: "unise", allowUpload: true }, "/in/a.wav")).toContain("--allow-upload");
@@ -206,13 +252,14 @@ describe("parseProgressLine / describeProgressEvent", () => {
 
 describe("queue helpers", () => {
   it("stages paths deduped and unstages by path", () => {
+    const paths = (queue: { path: string }[]) => queue.map((item) => item.path);
     const first = stageInto([], ["/a.wav", "/b.wav"]);
-    expect(queuePaths(first.items)).toEqual(["/a.wav", "/b.wav"]);
+    expect(paths(first.items)).toEqual(["/a.wav", "/b.wav"]);
     const again = stageInto(first.items, ["/a.wav", "/c.wav"]);
     expect(again.added).toEqual(["/c.wav"]);
-    expect(queuePaths(again.items)).toEqual(["/a.wav", "/b.wav", "/c.wav"]);
+    expect(paths(again.items)).toEqual(["/a.wav", "/b.wav", "/c.wav"]);
     const items = unstagePath(again.items, "/b.wav");
-    expect(queuePaths(items)).toEqual(["/a.wav", "/c.wav"]);
+    expect(paths(items)).toEqual(["/a.wav", "/c.wav"]);
     // Running items cannot be unstaged
     const running = again.items.map((item) =>
       item.path === "/a.wav" ? { ...item, status: "running" as const } : item,
@@ -231,6 +278,28 @@ describe("queue helpers", () => {
     expect(formatBytes(2048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
   });
+
+  const mixed = [
+    { path: "/a.wav", sizeBytes: 0, status: "pending" as const },
+    { path: "/b.wav", sizeBytes: 0, status: "done" as const },
+    { path: "/c.wav", sizeBytes: 0, status: "failed" as const, error: "boom" },
+    { path: "/d.wav", sizeBytes: 0, status: "running" as const },
+  ];
+
+  it("targets only pending and failed items on a plain run", () => {
+    expect(pendingTargets(mixed).map((item) => item.path)).toEqual(["/a.wav", "/c.wav"]);
+  });
+
+  it("re-arms finished and failed items for a rerun-all, keeping running ones", () => {
+    const reset = resetForRerun(mixed);
+    expect(reset.map((item) => [item.path, item.status])).toEqual([
+      ["/a.wav", "pending"],
+      ["/b.wav", "pending"],
+      ["/c.wav", "pending"],
+      ["/d.wav", "running"],
+    ]);
+    expect(reset[2]!.error).toBeUndefined();
+  });
 });
 
 describe("listDirectory", () => {
@@ -241,12 +310,12 @@ describe("listDirectory", () => {
       await writeFile(join(dir, "a.txt"), "x");
       await mkdir(join(dir, "sub"));
 
-      const media = await listDirectory(dir, false);
+      const media = (await listDirectory(dir, false))!;
       expect(media.map((e) => e.name)).toEqual(["sub", "b.mp3"]);
       expect(media[0]!.isDir).toBe(true);
       expect(media[1]!.supported).toBe(true);
 
-      const all = await listDirectory(dir, true);
+      const all = (await listDirectory(dir, true))!;
       expect(all.map((e) => e.name)).toEqual(["sub", "a.txt", "b.mp3"]);
       expect(all.find((e) => e.name === "a.txt")!.supported).toBe(false);
     } finally {
@@ -261,9 +330,34 @@ describe("listDirectory", () => {
       await symlink(join(dir, "real"), join(dir, "shortcut"));
       await symlink(join(dir, "nowhere"), join(dir, "broken"));
 
-      const entries = await listDirectory(dir, false);
+      const entries = (await listDirectory(dir, false))!;
       expect(entries.map((e) => e.name)).toEqual(["real", "shortcut"]);
       expect(entries.every((e) => e.isDir)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns null for missing directories but [] for empty ones", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mt-listdir-empty-"));
+    try {
+      expect(await listDirectory(dir, false)).toEqual([]);
+      expect(await listDirectory(join(dir, "gone"), false)).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips per-file stats above the size cap so huge folders stay instant", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mt-listdir-cap-"));
+    try {
+      const count = MAX_STATED_ENTRIES + 1;
+      await Promise.all(
+        Array.from({ length: count }, (_, i) => writeFile(join(dir, `f${String(i).padStart(3, "0")}.wav`), "x")),
+      );
+      const entries = (await listDirectory(dir, false))!;
+      expect(entries).toHaveLength(count);
+      expect(entries.every((entry) => entry.sizeBytes === 0)).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

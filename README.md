@@ -203,8 +203,13 @@ Standalone enhancement: produce cleaned audio without transcribing, e.g. to audi
 Interactive terminal UI (OpenTUI). Runs everything the CLI runs by executing the real CLI as a child process and streaming its `--json` progress events.
 
 - `s` opens the **staged-queue view**: every staged file across all folders with its status, `space` unstages, `a` clears the queue (running items are kept), `s`/`esc` returns to the browser — staged rows and search results keep their directory context in the name
-- Main pane: Transcribe (backend, model, preset, formats, output dir, enhancement engine + profile, split), Enhance (engine, profile, report), Doctor (live readiness panel). Remote engines (`unise`) add an **Allow upload** consent toggle (`--allow-upload`); running `unise` without consent fails with the CLI's own message shown next to the run hint
+- Lists move with `↑↓`/`j k` and jump with `PgUp`/`PgDn`/`Home`/`End`; the footer always shows the cursor position as `x/N` next to the staged count
+- Main pane: Transcribe (backend, model, preset, formats, output dir, device, enhancement engine + profile, split), Enhance (engine, profile, report), Doctor (live readiness panel). Remote engines (`unise`) add an **Allow upload** consent toggle (`--allow-upload`); running `unise` without consent fails with the CLI's own message shown next to the run hint
+- Enhancement tuning is reachable from both forms: **Declick**, **Hum notch**, **Howl notch** appear once an engine runs, and **DFN atten** only for `deepfilternet` (matching the CLI flags `--declick`, `--no-hum-notch`, `--howl-notch`, `--dfn-atten`)
+- `r` runs pending and failed files only; `R` re-arms the whole queue first so finished files run again. The run hint counts `▶ done/total · elapsed` with the child's current step underneath, and ends with an `ok / failed / cancelled` summary toast
+- `c` cancels an active run without leaving the TUI: the child is killed, the current row is marked `✗ cancelled`, and the rest of the queue stays pending. `ctrl+c` behaves like `q` (it asks before quitting mid-run)
 - Rows keep their size when staged and show ✓/▶/✗ status; a failed row's error appears under the run hint when the cursor is on it
+- Folders that disappear or cannot be read say so and fall back to the parent instead of pretending to be empty; folders above 500 entries skip the size column to stay instant
 - `o` opens a finished output in your system app, `v` views an enhancement report, `?` shows all keys; quitting mid-run asks before killing the child process
 
 ```bash

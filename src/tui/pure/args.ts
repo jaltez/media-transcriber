@@ -6,12 +6,44 @@ import type { ProgressEvent } from "../../types/index.js";
  * always runs the real CLI (single code path, identical behavior).
  */
 
-export interface TranscribeForm {
+export type Device = "auto" | "cuda" | "cpu";
+export type DfnAtten = "off" | "6" | "12" | "20";
+
+/** Enhancement tuning shared by both commands (--dfn-atten needs deepfilternet). */
+export interface EnhanceTuning {
+  declick: boolean;
+  humNotch: boolean;
+  howlNotch: boolean;
+  /** DeepFilterNet attenuation limit in dB; "off" leaves the engine default. */
+  dfnAtten: DfnAtten;
+}
+
+/** Flags mirroring the CLI defaults: no `--no-hum-notch` until the user opts out. */
+export const DEFAULT_ENHANCE_TUNING: EnhanceTuning = {
+  declick: false,
+  humNotch: true,
+  howlNotch: false,
+  dfnAtten: "off",
+};
+
+function tuningArgs(tuning: EnhanceTuning, enhancer: string): string[] {
+  const args: string[] = [];
+  if (tuning.declick) args.push("--declick");
+  if (!tuning.humNotch) args.push("--no-hum-notch");
+  if (tuning.howlNotch) args.push("--howl-notch");
+  if (tuning.dfnAtten !== "off" && enhancer === "deepfilternet") {
+    args.push("--dfn-atten", tuning.dfnAtten);
+  }
+  return args;
+}
+
+export interface TranscribeForm extends EnhanceTuning {
   backend: string;
   model: string;
   preset: string;
   formats: string;
   outputDir: string;
+  device: Device;
   enhancer: "none" | "basic" | "deepfilternet" | "unise";
   enhanceProfile: "asr" | "master";
   allowUpload: boolean;
@@ -19,11 +51,13 @@ export interface TranscribeForm {
 }
 
 export const DEFAULT_TRANSCRIBE_FORM: TranscribeForm = {
+  ...DEFAULT_ENHANCE_TUNING,
   backend: "whisper-local",
   model: "",
   preset: "",
   formats: "txt,srt",
   outputDir: "",
+  device: "auto",
   enhancer: "none",
   allowUpload: false,
   enhanceProfile: "asr",
@@ -37,16 +71,18 @@ export function buildTranscribeArgs(form: TranscribeForm, inputFile: string): st
   if (form.preset) args.push("--preset", form.preset);
   if (form.formats.trim()) args.push("-f", form.formats.trim());
   if (form.outputDir.trim()) args.push(form.outputDir.trim());
+  if (form.device !== "auto") args.push("-d", form.device);
   if (form.enhancer !== "none") args.push("--enhance", form.enhancer);
   if (form.enhancer !== "none" && form.enhanceProfile !== "asr") {
     args.push("--enhance-profile", form.enhanceProfile);
   }
+  if (form.enhancer !== "none") args.push(...tuningArgs(form, form.enhancer));
   if (form.splitThreshold.trim()) args.push("--split-threshold", form.splitThreshold.trim());
   if (form.allowUpload) args.push("--allow-upload");
   return args;
 }
 
-export interface EnhanceForm {
+export interface EnhanceForm extends EnhanceTuning {
   enhancer: "basic" | "deepfilternet" | "unise";
   profile: "asr" | "master";
   outputDir: string;
@@ -55,6 +91,7 @@ export interface EnhanceForm {
 }
 
 export const DEFAULT_ENHANCE_FORM: EnhanceForm = {
+  ...DEFAULT_ENHANCE_TUNING,
   enhancer: "basic",
   profile: "master",
   outputDir: "",
@@ -68,6 +105,7 @@ export function buildEnhanceArgs(form: EnhanceForm, inputFile: string): string[]
   args.push("--enhance-profile", form.profile);
   if (form.report) args.push("--report");
   if (form.allowUpload) args.push("--allow-upload");
+  args.push(...tuningArgs(form, form.enhancer));
   if (form.outputDir.trim()) args.push(form.outputDir.trim());
   return args;
 }
