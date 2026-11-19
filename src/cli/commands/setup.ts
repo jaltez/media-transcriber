@@ -20,6 +20,14 @@ import {
 } from "../../deps/whisper.js";
 import { discoverDeepFilterNet } from "../../deps/deepfilternet.js";
 import { discoverParakeet } from "../../deps/parakeet.js";
+import { discoverFasterWhisper } from "../../deps/faster-whisper.js";
+import { discoverWhisperCpp, WHISPERCPP_COMMAND_ENV } from "../../deps/whisper-cpp.js";
+import {
+  discoverGranite,
+  discoverVoxtral,
+  GRANITE_UV_PACKAGES,
+  VOXTRAL_UV_PACKAGES,
+} from "../../deps/speech-lm.js";
 import {
   getEnhancer,
   listEnhancers,
@@ -42,7 +50,7 @@ interface InstallOption {
 
 export const setupCommand = new Command("setup")
   .description("Guided setup for dependencies and backend readiness")
-  .argument("[backend]", "Backend or enhancer to set up: whisper-local, parakeet, whisper-api, deepfilternet, unise", defaultConfig.backend)
+  .argument("[backend]", "Backend or enhancer to set up: whisper-local, faster-whisper, whisper-cpp, parakeet, granite, voxtral, whisper-api, deepfilternet, unise", defaultConfig.backend)
   .action(async (name: string) => {
     registerBuiltinBackends();
     registerBuiltinEnhancers();
@@ -67,8 +75,16 @@ export const setupCommand = new Command("setup")
 
     if (backend.name === "whisper-local") {
       await setupLocalWhisper();
+    } else if (backend.name === "faster-whisper") {
+      await setupFasterWhisper();
+    } else if (backend.name === "whisper-cpp") {
+      await setupWhisperCpp();
     } else if (backend.name === "parakeet") {
       await setupParakeet();
+    } else if (backend.name === "granite") {
+      await setupSpeechLm("granite");
+    } else if (backend.name === "voxtral") {
+      await setupSpeechLm("voxtral");
     } else if (backend.name === "whisper-api") {
       await setupApiBackend(backend);
     } else {
@@ -283,6 +299,176 @@ function parakeetManualCommands(): string[] {
   ];
 }
 
+async function setupFasterWhisper(): Promise<void> {
+  const status = await discoverFasterWhisper();
+  if (status.available) {
+    console.log(`${pc.green("✓")} faster-whisper is available${status.version ? pc.gray(` (${status.version})`) : ""}${status.command ? pc.gray(` via ${status.command}`) : ""}`);
+    console.log(pc.gray("Whisper turbo weights (~1.6 GB) download automatically on the first transcription."));
+    return;
+  }
+
+  console.log(pc.yellow("No usable faster-whisper installation was found."));
+  const options = await availableInstallOptions(await fasterWhisperInstallOptions());
+  const selected = await chooseInstallOption(
+    "Choose a Faster-Whisper runtime path",
+    options,
+    fasterWhisperManualCommands(),
+  );
+  if (selected) {
+    await runInstall(selected);
+    console.log(pc.gray("Whisper turbo weights (~1.6 GB) download automatically on the first transcription."));
+  }
+}
+
+async function fasterWhisperInstallOptions(): Promise<InstallOption[]> {
+  const options: InstallOption[] = [
+    {
+      id: "uv-env",
+      label: "Use a uv-managed faster-whisper environment (recommended; no global install)",
+      command: "uv",
+      args: [
+        "run", "--no-project",
+        "--with", "faster-whisper",
+        "python", "-c", "import faster_whisper",
+      ],
+      display: 'uv run --no-project --with faster-whisper python -c "import faster_whisper"',
+      availabilityCommand: "uv",
+    },
+  ];
+
+  const python = await findPythonCommand();
+  if (python) {
+    options.push({
+      id: "pip",
+      label: "Install faster-whisper in the active Python",
+      command: python.command,
+      args: [...python.args, "-m", "pip", "install", "-U", "faster-whisper"],
+      display: `${python.display} -m pip install -U faster-whisper`,
+      availabilityCommand: python.command,
+      availabilityArgs: [...python.args, "--version"],
+    });
+  }
+
+  return options;
+}
+
+function fasterWhisperManualCommands(): string[] {
+  return [
+    'uv run --no-project --with faster-whisper python -c "import faster_whisper"',
+    "python -m pip install -U faster-whisper",
+    "# Requires ffmpeg on PATH (already checked above). Whisper turbo weights",
+    "# (~1.6 GB) download automatically on first use.",
+  ];
+}
+
+async function setupWhisperCpp(): Promise<void> {
+  const status = await discoverWhisperCpp();
+  if (status.available) {
+    console.log(`${pc.green("✓")} whisper.cpp CLI is available${status.command ? pc.gray(` (${status.command})`) : ""}`);
+    console.log(pc.gray("ggml weights download automatically on the first transcription (~574 MB for turbo)."));
+    return;
+  }
+
+  console.log(pc.yellow("No whisper.cpp CLI was found."));
+  printManualCommands(whisperCppManualCommands());
+}
+
+function whisperCppManualCommands(): string[] {
+  return [
+    "brew install whisper-cpp                    # macOS",
+    "conda install -c conda-forge whispercpp     # conda",
+    "# Build from source: https://github.com/ggml-org/whisper.cpp",
+    `export ${WHISPERCPP_COMMAND_ENV}="/path/to/whisper-cli"`,
+    "# ggml weights download automatically on first use (~574 MB for turbo).",
+  ];
+}
+
+interface SpeechLmSetup {
+  display: string;
+  probeImport: string;
+  uvPackages: string[];
+  modelNote: string;
+}
+
+const SPEECH_LM_SETUPS: Record<"granite" | "voxtral", SpeechLmSetup> = {
+  granite: {
+    display: "IBM Granite Speech",
+    probeImport: "import transformers, torchaudio",
+    uvPackages: [...GRANITE_UV_PACKAGES],
+    modelNote: "Granite Speech weights (~4 GB) download automatically on the first transcription.",
+  },
+  voxtral: {
+    display: "Mistral Voxtral",
+    probeImport: "import transformers, mistral_common",
+    uvPackages: [...VOXTRAL_UV_PACKAGES],
+    modelNote: "Voxtral weights (~7 GB) download automatically on the first transcription.",
+  },
+};
+
+async function setupSpeechLm(name: "granite" | "voxtral"): Promise<void> {
+  const setup = SPEECH_LM_SETUPS[name];
+  const status = name === "granite" ? await discoverGranite() : await discoverVoxtral();
+  if (status.available) {
+    console.log(`${pc.green("✓")} ${setup.display} runtime is available${status.version ? pc.gray(` (${status.version})`) : ""}${status.command ? pc.gray(` via ${status.command}`) : ""}`);
+    console.log(pc.gray(setup.modelNote));
+    return;
+  }
+
+  console.log(pc.yellow(`No usable ${setup.display} runtime was found.`));
+  const options = await availableInstallOptions(await speechLmInstallOptions(setup));
+  const selected = await chooseInstallOption(
+    `Choose a ${setup.display} runtime path`,
+    options,
+    speechLmManualCommands(setup),
+  );
+  if (selected) {
+    await runInstall(selected);
+    console.log(pc.gray(setup.modelNote));
+  }
+}
+
+async function speechLmInstallOptions(setup: SpeechLmSetup): Promise<InstallOption[]> {
+  const uvArgs = setup.uvPackages.flatMap((pkg) => ["--with", pkg]);
+  const options: InstallOption[] = [
+    {
+      id: "uv-env",
+      label: "Use a uv-managed environment (recommended; no global install)",
+      command: "uv",
+      args: [
+        "run", "--no-project",
+        ...uvArgs,
+        "python", "-c", setup.probeImport,
+      ],
+      display: `uv run --no-project ${setup.uvPackages.map((pkg) => `--with "${pkg}"`).join(" ")} python -c "${setup.probeImport}"`,
+      availabilityCommand: "uv",
+    },
+  ];
+
+  const python = await findPythonCommand();
+  if (python) {
+    options.push({
+      id: "pip",
+      label: "Install into the active Python (large download)",
+      command: python.command,
+      args: [...python.args, "-m", "pip", "install", "-U", ...setup.uvPackages],
+      display: `${python.display} -m pip install -U ${setup.uvPackages.map((pkg) => `"${pkg}"`).join(" ")}`,
+      availabilityCommand: python.command,
+      availabilityArgs: [...python.args, "--version"],
+    });
+  }
+
+  return options;
+}
+
+function speechLmManualCommands(setup: SpeechLmSetup): string[] {
+  return [
+    `uv run --no-project ${setup.uvPackages.map((pkg) => `--with "${pkg}"`).join(" ")} python -c "${setup.probeImport}"`,
+    `python -m pip install -U ${setup.uvPackages.map((pkg) => `"${pkg}"`).join(" ")}`,
+    "# Requires ffmpeg on PATH (already checked above).",
+    `# ${setup.modelNote}`,
+  ];
+}
+
 async function setupApiBackend(backend: TranscriptionBackend): Promise<void> {
   const config = configSchema.parse({
     backend: backend.name,
@@ -333,12 +519,16 @@ async function printFinalReadiness(backend: TranscriptionBackend): Promise<boole
 
 async function maybeRunSmokeTest(backend: TranscriptionBackend): Promise<void> {
   const { confirm } = await import("@inquirer/prompts");
+  const smokeTestNote: Record<string, string> = {
+    "whisper-api": "This makes a tiny API transcription request.",
+    parakeet: "First use downloads the NeMo environment and Parakeet model weights (~1.2 GB).",
+    "faster-whisper": "First use builds the uv environment and downloads Whisper turbo weights (~1.6 GB).",
+    "whisper-cpp": "First use downloads quantized ggml weights (~574 MB).",
+    granite: "First use downloads the Granite runtime and model weights (~4 GB).",
+    voxtral: "First use downloads the Voxtral runtime and model weights (~7 GB).",
+  };
   const run = await confirm({
-    message: backend.name === "whisper-api"
-      ? "Run an optional smoke test? This makes a tiny API transcription request."
-      : backend.name === "parakeet"
-        ? "Run an optional smoke test? First use downloads the NeMo environment and Parakeet model weights (~1.2 GB)."
-        : "Run an optional smoke test? This may download the selected Whisper model.",
+    message: `Run an optional smoke test? ${smokeTestNote[backend.name] ?? "This may download the selected Whisper model."}`,
     default: false,
   });
 

@@ -109,6 +109,8 @@ export interface BatchResult {
     failed: number;
     elapsed: number; // milliseconds
   };
+  /** Non-fatal advisories (e.g. deprecated models); always present in --json */
+  warnings?: string[];
 }
 
 /** Dependency availability status */

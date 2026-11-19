@@ -74,7 +74,7 @@ function col(hex: string): RGBA {
 const MODES = ["Transcribe", "Enhance", "Doctor"] as const;
 type Mode = (typeof MODES)[number];
 
-const BACKENDS = ["whisper-local", "whisper-api", "parakeet"] as const;
+const BACKENDS = ["whisper-local", "faster-whisper", "whisper-cpp", "parakeet", "granite", "voxtral", "whisper-api"] as const;
 const PRESETS = ["(off)", "fast", "balanced", "accurate"] as const;
 const FORMATS = ["txt,srt", "txt", "srt"] as const;
 const ENHANCERS = ["none", "basic", "deepfilternet", "unise"] as const;

@@ -19,7 +19,7 @@ import { invalidateProbeCache, PROBE_CACHE_KEYS } from "../deps/cache.js";
 export class WhisperLocalBackend implements TranscriptionBackend {
   readonly name = "whisper-local";
   readonly displayName = "Whisper (local)";
-  readonly defaultModel = "large-v2";
+  readonly defaultModel = "turbo";
 
   private config: Config | null = null;
   private commandSpec: CommandSpec | null = null;

@@ -25,7 +25,8 @@ interface DoctorOptions {
   whisperCommand?: string;
   all?: boolean;
   json?: boolean;
-  noCache?: boolean;
+  /** commander maps --no-cache to cache === false */
+  cache?: boolean;
 }
 
 interface DoctorReport {
@@ -78,7 +79,7 @@ interface BackendReadiness {
 
 export const doctorCommand = new Command("doctor")
   .description("Check readiness for transcription backends and audio enhancers")
-  .option("-b, --backend <name>", "Backend readiness path to check: whisper-local, parakeet, whisper-api")
+  .option("-b, --backend <name>", "Backend readiness path to check: whisper-local, faster-whisper, whisper-cpp, parakeet, granite, voxtral, whisper-api")
   .option("--enhancer <name>", "Enhancer readiness path to check (basic, deepfilternet, unise)")
   .option("--api-key <key>", "API key for API backend readiness (env: OPENAI_API_KEY)")
   .option("--whisper-command <command>", `Local Whisper command override (env: ${WHISPER_COMMAND_ENV})`)
@@ -89,7 +90,7 @@ export const doctorCommand = new Command("doctor")
     registerBuiltinBackends();
     registerBuiltinEnhancers();
 
-    if (opts.noCache) {
+    if (opts.cache === false) {
       setProbeCacheDisabled();
     }
 

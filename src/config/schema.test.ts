@@ -7,7 +7,7 @@ describe("configSchema", () => {
     expect(config.inputFolder).toBe("./data/input");
     expect(config.outputFolder).toBe("./data/output");
     expect(config.backend).toBe("whisper-local");
-    expect(config.whisperModel).toBe("large-v2");
+    expect(config.whisperModel).toBe("turbo");
     expect(config.device).toBe("auto");
     expect(config.maxDurationSeconds).toBe(1200);
     expect(config.enhancer).toBe("none");
@@ -68,7 +68,7 @@ describe("configSchema", () => {
 
   it("provides valid defaultConfig export", () => {
     expect(defaultConfig.backend).toBe("whisper-local");
-    expect(defaultConfig.whisperModel).toBe("large-v2");
+    expect(defaultConfig.whisperModel).toBe("turbo");
     expect(defaultConfig.device).toBe("auto");
     expect(defaultConfig.outputFormats).toContain("srt");
     expect(defaultConfig.enhancer).toBe("none");

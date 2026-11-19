@@ -1,6 +1,6 @@
 # media-transcriber
 
-Transcribe audio and video files to text and subtitles using pluggable AI backends, including local Whisper, NVIDIA Parakeet TDT, and the OpenAI Whisper API.
+Transcribe audio and video files to text and subtitles using pluggable AI backends, including local Whisper (openai-whisper, Faster-Whisper, whisper.cpp), NVIDIA Parakeet TDT, IBM Granite Speech, Mistral Voxtral, and the OpenAI API.
 
 ## Quick Start
 
@@ -36,9 +36,13 @@ media-transcriber tui
   - Linux: `sudo apt install ffmpeg`
 
 Backend requirements:
-- `whisper-local`: A usable local Whisper installation. This can come from PATH, [uv](https://docs.astral.sh/uv/) tool installs, `pipx`, `pip`, or an active Python environment. Use `media-transcriber setup whisper-local` for guided setup.
+- `whisper-local`: A usable local Whisper installation. This can come from PATH, [uv](https://docs.astral.sh/uv/) tool installs, `pipx`, `pip`, or an active Python environment. Use `media-transcriber setup whisper-local` for guided setup. Default model: `turbo`.
+- `faster-whisper`: Whisper weights through CTranslate2 (INT8 on CPU, FP16 on CUDA). Found in the active Python or a uv-managed environment (`uv run --with faster-whisper`, built automatically on first use). Use `media-transcriber setup faster-whisper`. Default model: `turbo`; turbo weights (~1.6 GB) download on first use.
+- `whisper-cpp`: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) CLI (`whisper-cli` on PATH, or `MEDIA_TRANSCRIBER_WHISPERCPP_COMMAND`), no Python. Quantized ggml weights download into the cache on first use (~574 MB for `turbo`); `large-v3` and `turbo` are pinned to q5_0 quantization. Use `media-transcriber setup whisper-cpp`.
 - `parakeet`: NVIDIA NeMo with PyTorch. Found automatically when `nemo_toolkit` is installed in the active Python; otherwise a uv-managed environment is used (`uv run --with "nemo-toolkit[asr]"`, built automatically on first use). Use `media-transcriber setup parakeet` for guided setup. Model weights (~1.2 GB) download automatically on the first transcription. GPU (CUDA) recommended; falls back to CPU.
-- `whisper-api`: OpenAI API key (`OPENAI_API_KEY` env var or `--api-key`)
+- `granite`: IBM Granite Speech 5.0 2B through transformers (active Python or uv-managed environment). Text-only output, so subtitles get one cue per ~2-minute chunk. Default model: `ibm-granite/granite-speech-5.0-2b` (~4 GB). Use `media-transcriber setup granite`.
+- `voxtral`: Mistral Voxtral Mini 3B through transformers (active Python or uv-managed environment). Text-only output, one cue per ~2-minute chunk. Default model: `mistralai/Voxtral-Mini-3B-2507` (~7 GB). Use `media-transcriber setup voxtral`.
+- `whisper-api`: OpenAI API key (`OPENAI_API_KEY` env var or `--api-key`). Default model: `gpt-transcribe`; `whisper-1` still works but is deprecated by OpenAI and shuts down on Feb 26, 2027.
 
 `uv add openai-whisper` is only appropriate inside a Python project. For general CLI setup, prefer a tool-style install such as `uv tool install openai-whisper`, `pipx install openai-whisper`, or `python -m pip install -U openai-whisper`.
 
@@ -112,7 +116,11 @@ Run guided setup when readiness fails:
 
 ```bash
 media-transcriber setup whisper-local
+media-transcriber setup faster-whisper
+media-transcriber setup whisper-cpp
 media-transcriber setup parakeet
+media-transcriber setup granite
+media-transcriber setup voxtral
 media-transcriber setup whisper-api
 media-transcriber setup deepfilternet
 ```
@@ -143,9 +151,9 @@ All parameters are passed at execution time (stateless CLI).
 | ---- | ---- | ---- | ---- |
 | `input` | string | required | Input file or folder |
 | `output` | string | optional for files, required for folders | Output folder |
-| `backend` | string | `whisper-local` | Transcription backend: `whisper-local`, `parakeet`, `whisper-api` |
-| `whisperModel` | string | backend default | Model name (e.g. `large-v3` for whisper-local, `parakeet-tdt-0.6b-v3` for parakeet, `whisper-1` for whisper-api) |
-| `preset` | `fast`, `balanced`, or `accurate` | unset | Friendly quality preset (whisper-local maps to `base`, `small`, `large-v2`) |
+| `backend` | string | `whisper-local` | Transcription backend: `whisper-local`, `faster-whisper`, `whisper-cpp`, `parakeet`, `granite`, `voxtral`, `whisper-api` |
+| `whisperModel` | string | backend default | Model name (e.g. `turbo` for whisper-local, `parakeet-tdt-0.6b-v3` for parakeet, `gpt-transcribe` for whisper-api) |
+| `preset` | `fast`, `balanced`, or `accurate` | unset | Friendly quality preset (`whisper-local`, `faster-whisper`, and `whisper-cpp` map to `base`, `small`, `large-v3`) |
 | `device` | `auto`, `cuda`, or `cpu` | `auto` | Processing device policy |
 | `enhancer` | `none`, `basic`, `deepfilternet`, or `unise` | `none` | Audio enhancement engine |
 | `enhanceProfile` | `asr` or `master` | `asr` | Enhancement post-processing profile |
@@ -175,7 +183,7 @@ Options:
 - `-m, --model <name>`: Backend model name (depends on `--backend`; run `doctor` to list them)
 - `--preset <name>`: Quality preset: `fast`, `balanced`, or `accurate`
 - `-d, --device <type>`: Processing device: `auto`, `cuda`, or `cpu`
-- `-b, --backend <name>`: Transcription backend: `whisper-local`, `parakeet`, or `whisper-api`
+- `-b, --backend <name>`: Transcription backend: `whisper-local`, `faster-whisper`, `whisper-cpp`, `parakeet`, `granite`, `voxtral`, or `whisper-api`
 - `--enhance [engine]`: Enhance audio before transcription; engine: `basic` (default), `deepfilternet`, `unise`
 - `--enhance-profile <profile>`: Enhancement post-processing: `asr` (default) or `master`
 - `--declick`: Add declicking to the enhancement chain
@@ -234,6 +242,8 @@ The TUI needs OpenTUI's native core: it re-execs under Bun >= 1.3.14 when availa
 - Guides FFmpeg/ffprobe installation when missing
 - Guides local Whisper setup through uv tool, pipx, pip, or existing installs
 - `setup parakeet` verifies or installs the NVIDIA NeMo runtime (active Python or uv-managed environment)
+- `setup faster-whisper`, `setup granite`, and `setup voxtral` verify or install their runtimes (active Python or uv-managed environment)
+- `setup whisper-cpp` reports whether `whisper-cli` is reachable and prints install paths (Homebrew, conda-forge, build from source) plus the `MEDIA_TRANSCRIBER_WHISPERCPP_COMMAND` override
 - `setup deepfilternet` guides the optional enhancer install (with the torchaudio<2.9 pin) and offers a smoke test
 - Validates API credentials without storing secrets
 - Offers an optional smoke test after readiness succeeds

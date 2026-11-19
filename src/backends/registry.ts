@@ -2,6 +2,10 @@ import type { TranscriptionBackend } from "./types.js";
 import { WhisperLocalBackend } from "./whisper-local.js";
 import { WhisperApiBackend } from "./whisper-api.js";
 import { ParakeetBackend } from "./parakeet.js";
+import { FasterWhisperBackend } from "./faster-whisper.js";
+import { WhisperCppBackend } from "./whisper-cpp.js";
+import { GraniteBackend } from "./granite.js";
+import { VoxtralBackend } from "./voxtral.js";
 
 const backends = new Map<string, TranscriptionBackend>();
 
@@ -23,6 +27,10 @@ export function listBackends(): string[] {
 /** Initialize all built-in backends */
 export function registerBuiltinBackends(): void {
   registerBackend(new WhisperLocalBackend());
+  registerBackend(new FasterWhisperBackend());
+  registerBackend(new WhisperCppBackend());
   registerBackend(new ParakeetBackend());
+  registerBackend(new GraniteBackend());
+  registerBackend(new VoxtralBackend());
   registerBackend(new WhisperApiBackend());
 }

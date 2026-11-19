@@ -18,6 +18,7 @@ import {
   type QualityPreset,
 } from "../../config/presets.js";
 import { WHISPER_COMMAND_ENV } from "../../deps/whisper.js";
+import { WHISPERCPP_COMMAND_ENV } from "../../deps/whisper-cpp.js";
 import { validateBackendModel } from "../../backends/types.js";
 import { findInputFiles, runPipeline, runSingleFile } from "../../pipeline/orchestrator.js";
 import { formatJson, formatHuman } from "../../output/formatter.js";
@@ -102,9 +103,9 @@ export const transcribeCommand = new Command("transcribe")
   .argument("<input>", "Audio/video file or folder to transcribe")
   .argument("[output]", "Output folder (default: next to input file, required for folders)")
   .option("-m, --model <name>", "Backend model name (depends on --backend; see Backends below)")
-  .option("--preset <name>", "Quality preset: fast, balanced, accurate (maps to base, small, large-v2 on whisper-local)", parsePreset)
+  .option("--preset <name>", "Quality preset: fast, balanced, accurate (maps to base, small, large-v3 on whisper-local, faster-whisper, whisper-cpp)", parsePreset)
   .option("-d, --device <type>", "Processing device: auto, cuda, or cpu (default: auto)")
-  .option("-b, --backend <name>", "Transcription backend: whisper-local, parakeet, whisper-api", "whisper-local")
+  .option("-b, --backend <name>", "Transcription backend: whisper-local, faster-whisper, whisper-cpp, parakeet, granite, voxtral, whisper-api", "whisper-local")
   .option("--split-threshold <seconds>", "Split files longer than this many seconds (default: 1200)", parseSeconds)
   .option("--enhance [engine]", "Enhance audio before transcription: basic, deepfilternet, unise (default engine: basic)")
   .addOption(new Option("--enhance-audio", "Deprecated alias for --enhance basic").hideHelp())
@@ -124,11 +125,19 @@ Supported input formats:
   ${SUPPORTED_FORMATS_DISPLAY}
 
 Backends (-b, --backend):
-  whisper-local  OpenAI Whisper CLI running locally (default model: large-v2)
+  whisper-local  OpenAI Whisper CLI running locally (default model: turbo)
                  models: tiny, base, small, medium, large, large-v2, large-v3, turbo
+  faster-whisper Whisper via CTranslate2, INT8 on CPU (default model: turbo)
+  whisper-cpp    whisper.cpp quantized ggml, no Python (default model: turbo;
+                 auto-downloads ~574 MB)
   parakeet       NVIDIA Parakeet TDT via NVIDIA NeMo, GPU recommended
                  default model: parakeet-tdt-0.6b-v3; also parakeet-tdt-0.6b-v2
-  whisper-api    OpenAI Whisper API, needs OPENAI_API_KEY (model: whisper-1, 25 MB limit)
+  granite        IBM Granite Speech 5.0 2B via transformers
+                 (default: ibm-granite/granite-speech-5.0-2b)
+  voxtral        Mistral Voxtral Mini 3B via transformers
+                 (default: mistralai/Voxtral-Mini-3B-2507)
+  whisper-api    OpenAI API, needs OPENAI_API_KEY (model: gpt-transcribe;
+                 whisper-1 deprecated, shuts down Feb 26 2027; 25 MB limit)
 
 Audio enhancement engines (--enhance):
   basic          FFmpeg denoise + analysis-driven hum notches (no extra dependencies)
@@ -136,10 +145,11 @@ Audio enhancement engines (--enhance):
   unise          UniSE remote restoration (experimental; uploads audio, needs --allow-upload)
 
 Environment variables:
-  OPENAI_API_KEY                     API key for the whisper-api backend
-  MEDIA_TRANSCRIBER_WHISPER_COMMAND  Override the local Whisper command
-  MEDIA_TRANSCRIBER_DFN_COMMAND      Override the DeepFilterNet command
-  MEDIA_TRANSCRIBER_ALLOW_UPLOAD=1   Consent to remote enhancement uploads
+  OPENAI_API_KEY                        API key for the whisper-api backend
+  MEDIA_TRANSCRIBER_WHISPER_COMMAND     Override the local Whisper command
+  ${WHISPERCPP_COMMAND_ENV}  Override the whisper.cpp CLI command
+  MEDIA_TRANSCRIBER_DFN_COMMAND         Override the DeepFilterNet command
+  MEDIA_TRANSCRIBER_ALLOW_UPLOAD=1      Consent to remote enhancement uploads
 
 Examples:
   $ media-transcriber transcribe recording.mp4              Transcribe a single file
@@ -299,6 +309,20 @@ Examples:
       process.exit(ExitCode.CONFIG_ERROR);
     }
 
+    // Deprecations surface as warnings, not failures: whisper-1 keeps working
+    // until OpenAI shuts it down, and existing configs must not break early.
+    const warnings: string[] = [];
+    if (backend.name === "whisper-api" && config.whisperModel === "whisper-1") {
+      warnings.push(
+        "whisper-1 is deprecated by OpenAI and stops working on Feb 26, 2027. Migrate with: -m gpt-transcribe",
+      );
+    }
+    if (!jsonMode) {
+      for (const warning of warnings) {
+        console.error(pc.yellow(`Warning: ${warning}`));
+      }
+    }
+
     // Availability probes run concurrently (like doctor); results are
     // consumed in the original order so error precedence is unchanged.
     const ffmpegStatusPromise = checkFfmpeg();
@@ -340,7 +364,7 @@ Examples:
     const ffmpegStatus = await ffmpegStatusPromise;
     if (!ffmpegStatus.ffmpeg.available || !ffmpegStatus.ffprobe.available) {
       if (jsonMode) {
-        console.log(JSON.stringify({ error: "missing_dependency", dependencies: ffmpegStatus }));
+        console.log(JSON.stringify({ error: "missing_dependency", dependencies: ffmpegStatus, warnings }));
       } else {
         console.error(pc.red("\nFFmpeg is required but not installed."));
         if (!ffmpegStatus.ffmpeg.available && ffmpegStatus.ffmpeg.installHint) {
@@ -358,7 +382,7 @@ Examples:
     const backendStatus = await backendStatusPromise;
     if (!backendStatus.available) {
       if (jsonMode) {
-        console.log(JSON.stringify({ error: "missing_dependency", backend: backendStatus }));
+        console.log(JSON.stringify({ error: "missing_dependency", backend: backendStatus, warnings }));
       } else {
         console.error(pc.red(`\nBackend '${backend.displayName}' is not available: ${backendStatus.error}`));
         if (backendStatus.installHint) {
@@ -374,7 +398,7 @@ Examples:
       const enhancerStatus = await enhancerStatusPromise;
       if (!enhancerStatus.available) {
         if (jsonMode) {
-          console.log(JSON.stringify({ error: "missing_dependency", enhancer: enhancerStatus }));
+          console.log(JSON.stringify({ error: "missing_dependency", enhancer: enhancerStatus, warnings }));
         } else {
           console.error(pc.red(`\nEnhancer '${enhancerDisplay.displayName}' is not available: ${enhancerStatus.error}`));
           if (enhancerStatus.installHint) {
@@ -414,7 +438,7 @@ Examples:
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
       if (jsonMode) {
-        console.log(formatJson({ files: [result], summary: { totalFiles: 1, successful: result.success ? 1 : 0, failed: result.success ? 0 : 1, elapsed: Date.now() - startTime } }));
+        console.log(formatJson({ files: [result], summary: { totalFiles: 1, successful: result.success ? 1 : 0, failed: result.success ? 0 : 1, elapsed: Date.now() - startTime }, warnings }));
       } else if (result.success) {
         const outputs = [result.output.txt, result.output.srt].filter(Boolean).join(", ");
         console.error(pc.green(`\n✓ Transcription complete → ${outputs} (${elapsed}s)\n`));
@@ -435,6 +459,7 @@ Examples:
           error: "no_input_files",
           inputFolder: config.inputFolder,
           supportedFormats: SUPPORTED_EXTENSIONS,
+          warnings,
         }));
       } else {
         console.error(pc.red(`No audio or video files found in '${config.inputFolder}'`));
@@ -466,7 +491,7 @@ Examples:
 
     // Output results
     if (jsonMode) {
-      console.log(formatJson(result));
+      console.log(formatJson({ ...result, warnings }));
     } else {
       console.error(formatHuman(result));
     }

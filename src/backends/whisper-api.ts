@@ -15,7 +15,7 @@ const PREPROCESSING_MAX_FILE_SIZE = 24 * 1024 * 1024;
 export class WhisperApiBackend implements TranscriptionBackend {
   readonly name = "whisper-api";
   readonly displayName = "Whisper (OpenAI API)";
-  readonly defaultModel = "whisper-1";
+  readonly defaultModel = "gpt-transcribe";
 
   private apiKey?: string;
 
@@ -34,7 +34,7 @@ export class WhisperApiBackend implements TranscriptionBackend {
           "Set OPENAI_API_KEY environment variable or pass --api-key",
       };
     }
-    return { available: true, name: this.name, version: "whisper-1" };
+    return { available: true, name: this.name, version: "gpt-transcribe" };
   }
 
   async transcribe(options: TranscribeOptions): Promise<TranscriptSegment> {
@@ -126,7 +126,7 @@ export class WhisperApiBackend implements TranscriptionBackend {
   }
 
   supportedModels(): string[] {
-    return ["whisper-1"];
+    return ["gpt-transcribe", "whisper-1"];
   }
 
   capabilities() {

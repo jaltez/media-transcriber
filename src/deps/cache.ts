@@ -24,6 +24,10 @@ export const PROBE_CACHE_KEYS = {
   whisper: "whisper-v1",
   deepfilternet: "deepfilternet-v1",
   parakeet: "parakeet-v1",
+  fasterWhisper: "faster-whisper-v1",
+  whisperCpp: "whisper-cpp-v1",
+  granite: "granite-v1",
+  voxtral: "voxtral-v1",
 } as const;
 
 let disabled = false;
@@ -43,7 +47,8 @@ interface ProbeCacheEntry<T> {
   value: T;
 }
 
-function cacheDirPath(): string | null {
+/** Root cache directory; also hosts downloaded model weights (e.g. whisper.cpp ggml). */
+export function cacheDirPath(): string {
   const override = process.env["MEDIA_TRANSCRIBER_CACHE_DIR"];
   if (override) return override;
 
@@ -63,9 +68,7 @@ function cacheDirPath(): string | null {
 
 function cacheFilePath(key: string): string | null {
   if (isProbeCacheDisabled()) return null;
-  const dir = cacheDirPath();
-  if (!dir) return null;
-  return join(dir, `${key}.json`);
+  return join(cacheDirPath(), `${key}.json`);
 }
 
 export async function readProbeCache<T>(
@@ -123,7 +126,6 @@ export async function writeProbeCache<T>(key: string, value: T): Promise<void> {
  */
 export async function invalidateProbeCache(...keys: string[]): Promise<void> {
   const dir = cacheDirPath();
-  if (!dir) return;
 
   if (keys.length > 0) {
     await Promise.all(keys.map((key) => unlink(join(dir, `${key}.json`)).catch(() => {})));
